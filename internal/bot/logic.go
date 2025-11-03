@@ -9,12 +9,12 @@ import (
 type BotMoveCalculator struct{}
 
 // CalculateNextMove calls the package-level function to satisfy the interface.
-func (c *BotMoveCalculator) CalculateNextMove(board [][]string, mark string, difficulty string) (row, col int) {
+func (c *BotMoveCalculator) CalculateNextMove(board [][]game.PlayerMark, mark game.PlayerMark, difficulty string) (row, col int) {
 	return CalculateNextMove(board, mark, difficulty)
 }
 
 // CalculateNextMove determines the bot's next move based on the specified difficulty.
-func CalculateNextMove(board [][]string, botMark string, difficulty string) (row, col int) {
+func CalculateNextMove(board [][]game.PlayerMark, botMark game.PlayerMark, difficulty string) (row, col int) {
 	switch difficulty {
 	case "easy":
 		return easyMove(board)
@@ -28,7 +28,7 @@ func CalculateNextMove(board [][]string, botMark string, difficulty string) (row
 }
 
 // easyMove makes a completely random move.
-func easyMove(board [][]string) (row, col int) {
+func easyMove(board [][]game.PlayerMark) (row, col int) {
 	var availableMoves [][2]int
 	for r, rowData := range board {
 		for c, cell := range rowData {
@@ -47,7 +47,7 @@ func easyMove(board [][]string) (row, col int) {
 }
 
 // mediumMove will win if it can, block if it must, otherwise move randomly.
-func mediumMove(board [][]string, botMark string) (row, col int) {
+func mediumMove(board [][]game.PlayerMark, botMark game.PlayerMark) (row, col int) {
 	opponentMark := game.PlayerX
 	if botMark == game.PlayerX {
 		opponentMark = game.PlayerO
@@ -70,7 +70,7 @@ func mediumMove(board [][]string, botMark string) (row, col int) {
 }
 
 // hardMove implements the optimal strategy.
-func hardMove(board [][]string, botMark string) (row, col int) {
+func hardMove(board [][]game.PlayerMark, botMark game.PlayerMark) (row, col int) {
 	opponentMark := game.PlayerX
 	if botMark == game.PlayerX {
 		opponentMark = game.PlayerO
@@ -124,7 +124,7 @@ func hardMove(board [][]string, botMark string) (row, col int) {
 }
 
 // findWinningMove checks if a player has a potential winning move (two in a row with an empty third).
-func findWinningMove(board [][]string, mark string) (row, col int, found bool) {
+func findWinningMove(board [][]game.PlayerMark, mark game.PlayerMark) (row, col int, found bool) {
 	// Check rows
 	for r := range [3]int{} {
 		if board[r][0] == mark && board[r][1] == mark && board[r][2] == "" {

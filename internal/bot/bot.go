@@ -1,7 +1,8 @@
 package bot
 
 import (
-	"ctchen222/Tic-Tac-Toe/internal/room"
+	"ctchen222/Tic-Tac-Toe/internal/game"
+	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
 	"log"
@@ -11,12 +12,12 @@ import (
 )
 
 // BotConnection simulates a websocket connection for a bot player.
-// It implements the room.Connection interface.
+// It implements the player.Connection interface.
 type BotConnection struct {
 	playerID   string
 	moveChan   chan []byte
-	mark       string // Stores the bot's mark ('X' or 'O')
-	difficulty string // Stores the bot's difficulty
+	mark       game.PlayerMark // Stores the bot's mark ('X' or 'O')
+	difficulty string          // Stores the bot's difficulty
 }
 
 // NewBotConnection creates a new connection for a bot.
@@ -90,9 +91,9 @@ func (bc *BotConnection) Close() error {
 }
 
 // NewBotPlayer creates a new player instance that is a bot.
-func NewBotPlayer(difficulty string) *room.Player {
+func NewBotPlayer(difficulty string) *player.Player {
 	botID := "bot-" + uuid.New().String()[:8]
-	return &room.Player{
+	return &player.Player{
 		ID:   botID,
 		Conn: NewBotConnection(botID, difficulty),
 	}

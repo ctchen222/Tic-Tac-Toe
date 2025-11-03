@@ -2,9 +2,11 @@ package room
 
 import (
 	"ctchen222/Tic-Tac-Toe/internal/game"
+	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/internal/validator"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -14,76 +16,67 @@ import (
 
 // MoveCalculator defines an interface for an agent that can calculate a game move.
 type MoveCalculator interface {
-	CalculateNextMove(board [][]string, mark string, difficulty string) (row, col int)
-}
-
-// Connection is an interface that abstracts the websocket connection.
-type Connection interface {
-	WriteMessage(messageType int, data []byte) error
-	ReadMessage() (int, []byte, error)
-	Close() error
-}
-
-// Player represents a player in a room.
-type Player struct {
-	ID   string
-	Conn Connection
+	CalculateNextMove(board [][]game.PlayerMark, mark game.PlayerMark, difficulty string) (row, col int)
 }
 
 // playerMove is a message from a player.
 type playerMove struct {
-	player  *Player
+	player  *player.Player
 	message []byte
 }
 
 // Room represents a game room.
 type Room struct {
 	ID             string
-	Players        []*Player
-	PlayerMarkMap  map[string]string
+	Players        []*player.Player
+	PlayerMarkMap  map[string]game.PlayerMark
 	Game           *game.Game
 	mu             sync.Mutex
 	incomingMoves  chan *playerMove
-	unregister     chan *Player
+	unregister     chan *player.Player
 	moveCalculator MoveCalculator
 	moveTimeout    time.Duration
+	rematchVotes   map[string]bool
+	Done           chan struct{} // Channel to signal the room to stop
 }
 
 // NewRoom creates a new game room.
 func NewRoom(id string, calculator MoveCalculator, timeout time.Duration) *Room {
 	return &Room{
 		ID:             id,
-		Players:        make([]*Player, 0, 2),
-		PlayerMarkMap:  make(map[string]string),
+		Players:        make([]*player.Player, 0, 2),
+		PlayerMarkMap:  make(map[string]game.PlayerMark),
 		Game:           game.NewGame(),
 		incomingMoves:  make(chan *playerMove),
-		unregister:     make(chan *Player),
+		unregister:     make(chan *player.Player),
 		moveCalculator: calculator,
 		moveTimeout:    timeout,
+		rematchVotes:   make(map[string]bool),
+		Done:           make(chan struct{}), // Initialize the done channel
 	}
 }
 
 // AddPlayer adds a player to the room.
-func (r *Room) AddPlayer(player *Player) {
-	r.Players = append(r.Players, player)
+func (r *Room) AddPlayer(p *player.Player) {
+	r.Players = append(r.Players, p)
 }
 
 // Broadcast sends a message to all players in the room.
 func (r *Room) Broadcast(message *proto.ServerToClientMessage) {
-	for _, player := range r.Players {
+	for _, p := range r.Players {
 		data, err := json.Marshal(message)
 		if err != nil {
 			log.Printf("error marshalling message: %v", err)
 			continue
 		}
-		if err := player.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Printf("error writing message to player %s: %v", player.ID, err)
+		if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Printf("error writing message to player %s: %v", p.ID, err)
 		}
 	}
 }
 
 // HandleMessage handles a message from a player.
-func (r *Room) HandleMessage(player *Player, rawMessage []byte) {
+func (r *Room) HandleMessage(p *player.Player, rawMessage []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -95,54 +88,107 @@ func (r *Room) HandleMessage(player *Player, rawMessage []byte) {
 
 	validate := validator.GetValidator()
 	if err := validate.Struct(message); err != nil {
-		log.Printf("invalid message from player %s: %v", player.ID, err)
+		log.Printf("invalid message from player %s: %v", p.ID, err)
 		return
 	}
 
 	if message.Type == "move" {
-		playerMark, ok := r.PlayerMarkMap[player.ID]
-		if !ok {
-			log.Printf("player %s has no assigned mark", player.ID)
+		if r.Game.Winner != game.None || r.Game.IsDraw() {
+			log.Printf("Player %s attempted to move, but game is already over.", p.ID)
 			return
 		}
-		if playerMark != r.Game.CurrentTurn {
-			log.Printf("not player %s's turn", player.ID)
+		playerMark, ok := r.PlayerMarkMap[p.ID]
+		if !ok {
+			log.Printf("player %s has no assigned mark", p.ID)
+			return
+		}
+		if playerMark != game.PlayerMark(r.Game.CurrentTurn) {
+			log.Printf("not player %s's turn", p.ID)
 			return
 		}
 
+		fmt.Printf("Current board: %v\n", r.Game.BoardAsStrings())
 		if err := r.Game.Move(message.Position[0], message.Position[1]); err != nil {
-			log.Printf("invalid move from player %s: %v", player.ID, err)
+			log.Printf("invalid move from player %s: %v", p.ID, err)
 			return
 		}
 
 		response := &proto.ServerToClientMessage{
 			Type:   "update",
 			Board:  r.Game.BoardAsStrings(),
-			Next:   string(r.Game.CurrentTurn),
-			Winner: string(r.Game.Winner),
+			Next:   r.Game.CurrentTurn,
+			Winner: r.Game.Winner,
 		}
 		r.Broadcast(response)
+	} else if message.Type == "rematch" {
+		if r.Game.Winner == game.None {
+			log.Printf("Player %s requested rematch, but game is not over.", p.ID)
+			return
+		}
+
+		log.Printf("Player %s voted for a rematch.", p.ID)
+		r.rematchVotes[p.ID] = true
+
+		if len(r.rematchVotes) == len(r.Players) && len(r.Players) == 2 {
+			log.Printf("All players voted for a rematch in room %s. Resetting game.", r.ID)
+			r.resetGameForRematch()
+		} else {
+			for _, otherPlayer := range r.Players {
+				if otherPlayer.ID != p.ID {
+					msg := &proto.ServerToClientMessage{Type: "rematch_requested"}
+					data, _ := json.Marshal(msg)
+					otherPlayer.Conn.WriteMessage(websocket.TextMessage, data)
+				}
+			}
+		}
 	}
 }
 
-// Start starts the game room, launching the main game loop and listening for player disconnections.
-func (r *Room) Start(unregisterPlayer chan<- *Player) {
-	// Start a read pump for each player
-	for _, player := range r.Players {
-		go r.readPump(player)
+func (r *Room) resetGameForRematch() {
+	r.Game = game.NewGame()
+	r.rematchVotes = make(map[string]bool)
+
+	p1 := r.Players[0]
+	p2 := r.Players[1]
+	oldP1Mark := game.PlayerMark(r.PlayerMarkMap[p1.ID])
+	r.PlayerMarkMap[p1.ID] = r.PlayerMarkMap[p2.ID]
+	r.PlayerMarkMap[p2.ID] = oldP1Mark
+
+	log.Printf("Room %s marks swapped: Player %s is now %s, Player %s is now %s", r.ID, p1.ID, r.PlayerMarkMap[p1.ID], p2.ID, r.PlayerMarkMap[p2.ID])
+
+	for _, p := range r.Players {
+		assignmentMessage := &proto.PlayerAssignmentMessage{
+			Type: "assignment",
+			Mark: game.PlayerMark(r.PlayerMarkMap[p.ID]),
+		}
+		data, _ := json.Marshal(assignmentMessage)
+		p.Conn.WriteMessage(websocket.TextMessage, data)
 	}
 
-	// Start the main game loop
+	initialMessage := &proto.ServerToClientMessage{
+		Type:   "update",
+		Board:  r.Game.BoardAsStrings(),
+		Next:   r.Game.CurrentTurn,
+		Winner: r.Game.Winner,
+	}
+	r.Broadcast(initialMessage)
+}
+
+// Start starts the game room, launching the main game loop and listening for player disconnections.
+func (r *Room) Start(unregisterPlayer chan<- *player.Player) {
+	for _, p := range r.Players {
+		go r.readPump(p)
+	}
+
 	go r.run()
 
-	// Forward unregister events to the hub
 	for p := range r.unregister {
 		unregisterPlayer <- p
 	}
 }
 
 // readPump pumps messages from the websocket connection to the room's incomingMoves channel.
-func (r *Room) readPump(p *Player) {
+func (r *Room) readPump(p *player.Player) {
 	defer func() {
 		r.unregister <- p
 		p.Conn.Close()
@@ -163,10 +209,10 @@ func (r *Room) run() {
 	timer := time.NewTimer(r.moveTimeout)
 	defer timer.Stop()
 
-	for r.Game.Winner == "" && len(r.Players) == 2 {
-		var currentPlayer *Player
+	for {
+		var currentPlayer *player.Player
 		for _, p := range r.Players {
-			if r.PlayerMarkMap[p.ID] == r.Game.CurrentTurn {
+			if game.PlayerMark(r.PlayerMarkMap[p.ID]) == r.Game.CurrentTurn {
 				currentPlayer = p
 				break
 			}
@@ -180,22 +226,26 @@ func (r *Room) run() {
 		timer.Reset(r.moveTimeout)
 
 		select {
+		case <-r.Done:
+			log.Printf("Room %s run goroutine stopping.", r.ID)
+			return
+
 		case move := <-r.incomingMoves:
 			if !timer.Stop() {
 				<-timer.C // Drain the timer
 			}
-			if move.player.ID != currentPlayer.ID {
-				log.Printf("Ignoring move from player %s, it is %s's turn", move.player.ID, currentPlayer.ID)
-				continue
-			}
 			r.HandleMessage(move.player, move.message)
 
 		case <-timer.C:
-			log.Printf("Player %s timed out. Making a proxy move.", currentPlayer.ID)
+			if r.Game.Winner != game.None {
+				log.Printf("Game in room %s is over. No proxy move needed.", r.ID)
+				continue
+			}
 
-			// Use bot logic to make a move
 			row, col := r.moveCalculator.CalculateNextMove(r.Game.BoardAsStrings(), r.Game.CurrentTurn, "medium")
-			if row != -1 {
+
+			if row != -1 && col != -1 {
+				log.Printf("Proxy move for player %s: row %d, col %d", currentPlayer.ID, row, col)
 				moveMsg := proto.ClientToServerMessage{Type: "move", Position: []int{row, col}}
 				moveBytes, _ := json.Marshal(moveMsg)
 				r.HandleMessage(currentPlayer, moveBytes)

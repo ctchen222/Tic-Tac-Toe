@@ -5,6 +5,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/game"
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
 	"ctchen222/Tic-Tac-Toe/internal/match"
+	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/internal/room"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
@@ -22,7 +23,7 @@ const moveTimeout = 15 * time.Second
 type Hub struct {
 	rooms        map[string]*room.Room
 	register     chan *types.RegistrationRequest
-	unregister   chan *room.Player
+	unregister   chan *player.Player
 	matchManager *match.MatchManager
 }
 
@@ -31,7 +32,7 @@ func NewHub() *Hub {
 	return &Hub{
 		rooms:        make(map[string]*room.Room),
 		register:     make(chan *types.RegistrationRequest),
-		unregister:   make(chan *room.Player),
+		unregister:   make(chan *player.Player),
 		matchManager: match.NewMatchManager(),
 	}
 }
@@ -40,24 +41,21 @@ func NewHub() *Hub {
 func (h *Hub) Run() {
 	go h.matchManager.Run()
 
-	// Create a single move calculator to be used by all rooms.
 	moveCalculator := &bot.BotMoveCalculator{}
 
 	for {
 		select {
 		case req := <-h.register:
 			if req.Mode == "bot" {
-				// Create a bot match immediately
 				log.Printf("Creating bot match for player %s", req.Player.ID)
 				player1 := req.Player
 				player2 := bot.NewBotPlayer(req.Difficulty)
 
 				roomID := uuid.New().String()
-				newRoom := room.NewRoom(roomID, moveCalculator, moveTimeout) // Pass calculator and timeout
+				newRoom := room.NewRoom(roomID, moveCalculator, moveTimeout)
 				newRoom.AddPlayer(player1)
 				newRoom.AddPlayer(player2)
 
-				// Randomly assign marks
 				if rand.N(2) == 0 {
 					newRoom.PlayerMarkMap[player1.ID] = game.PlayerX
 					newRoom.PlayerMarkMap[player2.ID] = game.PlayerO
@@ -67,11 +65,10 @@ func (h *Hub) Run() {
 				}
 
 				h.rooms[roomID] = newRoom
-				go newRoom.Start(h.unregister) // Pass the unregister channel
+				go newRoom.Start(h.unregister)
 
 				log.Printf("Room %s created for bot match with player %s and bot %s", roomID, player1.ID, player2.ID)
 
-				// Notify players that the game has started
 				initialMessage := &proto.ServerToClientMessage{
 					Type:  "update",
 					Board: newRoom.Game.BoardAsStrings(),
@@ -80,39 +77,37 @@ func (h *Hub) Run() {
 				h.BroadcastPlayerMarkMessage(newRoom)
 				newRoom.Broadcast(initialMessage)
 			} else {
-				// Add player to the regular matchmaking pool
 				h.matchManager.AddPlayer(req.Player)
 			}
 
-		case player := <-h.unregister:
-			h.matchManager.RemovePlayer(player.ID)
+		case p := <-h.unregister:
+			h.matchManager.RemovePlayer(p.ID)
 
-			// Remove from active rooms
 			for roomID, r := range h.rooms {
-				for i, p := range r.Players {
-					if p.ID == player.ID {
+				for i, roomPlayer := range r.Players {
+					if roomPlayer.ID == p.ID {
 						r.Players = append(r.Players[:i], r.Players[i+1:]...)
-						log.Printf("Player %s removed from room %s", player.ID, roomID)
+						log.Printf("Player %s removed from room %s", p.ID, roomID)
 						if len(r.Players) == 0 {
-							delete(h.rooms, roomID) // Close room if empty
+							close(r.Done)
+							delete(h.rooms, roomID)
 							log.Printf("Room %s closed due to no players", roomID)
 						}
 						break
 					}
 				}
 			}
-			log.Printf("Player %s disconnected", player.ID)
+			log.Printf("Player %s disconnected", p.ID)
 
 		case pair := <-h.matchManager.MatchedPair():
 			player1 := pair[0]
 			player2 := pair[1]
 
 			roomID := uuid.New().String()
-			newRoom := room.NewRoom(roomID, moveCalculator, moveTimeout) // Pass calculator and timeout
+			newRoom := room.NewRoom(roomID, moveCalculator, moveTimeout)
 			newRoom.AddPlayer(player1)
 			newRoom.AddPlayer(player2)
 
-			// Randomly assign marks
 			if rand.N(2) == 0 {
 				newRoom.PlayerMarkMap[player1.ID] = game.PlayerX
 				newRoom.PlayerMarkMap[player2.ID] = game.PlayerO
@@ -122,11 +117,10 @@ func (h *Hub) Run() {
 			}
 
 			h.rooms[roomID] = newRoom
-			go newRoom.Start(h.unregister) // Pass the unregister channel
+			go newRoom.Start(h.unregister)
 
 			log.Printf("Room %s created with players %s and %s", roomID, player1.ID, player2.ID)
 
-			// Notify players that the game has started
 			initialMessage := &proto.ServerToClientMessage{
 				Type:  "update",
 				Board: newRoom.Game.BoardAsStrings(),
@@ -136,14 +130,14 @@ func (h *Hub) Run() {
 
 			h.BroadcastPlayerMarkMessage(newRoom)
 		}
-
 	}
 }
+
 func (h *Hub) BroadcastPlayerMarkMessage(room *room.Room) {
-	for _, player := range room.Players {
-		mark, ok := room.PlayerMarkMap[player.ID]
+	for _, p := range room.Players {
+		mark, ok := room.PlayerMarkMap[p.ID]
 		if !ok {
-			log.Printf("No mark assigned for player %s in room %s", player.ID, room.ID)
+			log.Printf("No mark assigned for player %s in room %s", p.ID, room.ID)
 			continue
 		}
 		assignmentMessage := &proto.PlayerAssignmentMessage{
@@ -151,14 +145,12 @@ func (h *Hub) BroadcastPlayerMarkMessage(room *room.Room) {
 			Mark: mark,
 		}
 
-		// Serialize and send the message
 		data, err := json.Marshal(assignmentMessage)
 		if err != nil {
-			log.Printf("Error marshalling assignment message for player %s: %v", player.ID, err)
+			log.Printf("Error marshalling assignment message for player %s: %v", p.ID, err)
 		}
-		if err := player.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			// TODO: trace | roomID, playerID
-			log.Printf("Error sending assignment message to player %s: %v", player.ID, err)
+		if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Printf("Error sending assignment message to player %s: %v", p.ID, err)
 		}
 	}
 }
@@ -169,6 +161,7 @@ func (h *Hub) Register() chan<- *types.RegistrationRequest {
 }
 
 // Unregister returns the unregister channel.
-func (h *Hub) Unregister() chan<- *room.Player {
+func (h *Hub) Unregister() chan<- *player.Player {
 	return h.unregister
 }
+

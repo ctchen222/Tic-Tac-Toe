@@ -3,7 +3,7 @@ package main
 import (
 	"ctchen222/Tic-Tac-Toe/internal/hub"
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
-	"ctchen222/Tic-Tac-Toe/internal/room"
+	"ctchen222/Tic-Tac-Toe/internal/player"
 	"log"
 	"net/http"
 
@@ -26,7 +26,7 @@ func serveWs(hub *hub.Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	player := &room.Player{
+	p := &player.Player{
 		ID:   uuid.New().String(),
 		Conn: conn,
 	}
@@ -41,7 +41,7 @@ func serveWs(hub *hub.Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := &types.RegistrationRequest{
-		Player:     player,
+		Player:     p,
 		Mode:       mode,
 		Difficulty: difficulty,
 	}

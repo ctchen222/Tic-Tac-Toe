@@ -1,34 +1,36 @@
 package match
 
 import (
-	"ctchen222/Tic-Tac-Toe/internal/room"
+	"ctchen222/Tic-Tac-Toe/internal/player"
+	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 
 type MatchManager struct {
 	mu               sync.Mutex
-	waitingPlayers   []*room.Player
-	addPlayerChan    chan *room.Player
+	waitingPlayers   []*player.Player
+	addPlayerChan    chan *player.Player
 	removePlayerChan chan string
-	matchedPairChan  chan [2]*room.Player
+	matchedPairChan  chan [2]*player.Player
 }
 
 func NewMatchManager() *MatchManager {
 	return &MatchManager{
-		waitingPlayers:   make([]*room.Player, 0),
-		addPlayerChan:    make(chan *room.Player, 1),
+		waitingPlayers:   make([]*player.Player, 0),
+		addPlayerChan:    make(chan *player.Player, 1),
 		removePlayerChan: make(chan string),
-		matchedPairChan:  make(chan [2]*room.Player, 1),
+		matchedPairChan:  make(chan [2]*player.Player, 1),
 	}
 }
 
 func (m *MatchManager) Run() {
 	for {
 		select {
-		case player := <-m.addPlayerChan:
+		case p := <-m.addPlayerChan:
 			m.mu.Lock()
-			m.waitingPlayers = append(m.waitingPlayers, player)
+			m.waitingPlayers = append(m.waitingPlayers, p)
 			m.mu.Unlock()
 			m.tryMatchPlayers()
 
@@ -46,15 +48,15 @@ func (m *MatchManager) Run() {
 	}
 }
 
-func (m *MatchManager) AddPlayer(player *room.Player) {
-	m.addPlayerChan <- player
+func (m *MatchManager) AddPlayer(p *player.Player) {
+	m.addPlayerChan <- p
 }
 
 func (m *MatchManager) RemovePlayer(playerID string) {
 	m.removePlayerChan <- playerID
 }
 
-func (m *MatchManager) MatchedPair() <-chan [2]*room.Player {
+func (m *MatchManager) MatchedPair() <-chan [2]*player.Player {
 	return m.matchedPairChan
 }
 
@@ -67,7 +69,26 @@ func (m *MatchManager) tryMatchPlayers() {
 		player2 := m.waitingPlayers[1]
 		m.waitingPlayers = m.waitingPlayers[2:]
 
-		m.matchedPairChan <- [2]*room.Player{player1, player2}
+		m.matchedPairChan <- [2]*player.Player{player1, player2}
 		log.Printf("Matchmaker: Matched players %s and %s", player1.ID, player2.ID)
 	}
+}
+
+// GetWaitingPlayersCount returns the current number of players waiting for a match.
+func (m *MatchManager) GetWaitingPlayersCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.waitingPlayers)
+}
+
+// WaitForWaitingPlayers polls the waitingPlayers count until it matches the expected count or a timeout occurs.
+func (m *MatchManager) WaitForWaitingPlayers(expectedCount int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if m.GetWaitingPlayersCount() == expectedCount {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond) // Poll every 10ms
+	}
+	return fmt.Errorf("timed out waiting for waitingPlayers count to be %d", expectedCount)
 }
