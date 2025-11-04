@@ -26,10 +26,18 @@ func serveWs(hub *hub.Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := &player.Player{
-		ID:   uuid.New().String(),
-		Conn: conn,
+	// Check for reconnection
+	reconnectID := r.URL.Query().Get("playerId")
+
+	var p *player.Player
+	var playerID string
+
+	if reconnectID != "" {
+		playerID = reconnectID
+	} else {
+		playerID = uuid.New().String()
 	}
+	p = player.NewPlayer(playerID, conn)
 
 	mode := r.URL.Query().Get("mode")
 	if mode == "" {
@@ -42,6 +50,7 @@ func serveWs(hub *hub.Hub, w http.ResponseWriter, r *http.Request) {
 
 	req := &types.RegistrationRequest{
 		Player:     p,
+		PlayerID:   reconnectID, // Pass the reconnectID here (will be empty for new players)
 		Mode:       mode,
 		Difficulty: difficulty,
 	}
@@ -53,6 +62,11 @@ func main() {
 	hub := hub.NewHub()
 	go hub.Run()
 
+	// Serve static files from the "web" directory
+	fs := http.FileServer(http.Dir("./web"))
+	http.Handle("/", fs)
+
+	// Handle WebSocket connections
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
 	})

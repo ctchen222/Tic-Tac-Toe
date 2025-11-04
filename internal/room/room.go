@@ -6,13 +6,18 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/validator"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
-	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+const (
+	heartbeatInterval = 10 * time.Second
+)
+
+var reconnectionGracePeriod = 60 * time.Second
 
 // MoveCalculator defines an interface for an agent that can calculate a game move.
 type MoveCalculator interface {
@@ -27,32 +32,34 @@ type playerMove struct {
 
 // Room represents a game room.
 type Room struct {
-	ID             string
-	Players        []*player.Player
-	PlayerMarkMap  map[string]game.PlayerMark
-	Game           *game.Game
-	mu             sync.Mutex
-	incomingMoves  chan *playerMove
-	unregister     chan *player.Player
-	moveCalculator MoveCalculator
-	moveTimeout    time.Duration
-	rematchVotes   map[string]bool
-	Done           chan struct{} // Channel to signal the room to stop
+	ID                 string
+	Players            []*player.Player
+	PlayerMarkMap      map[string]game.PlayerMark
+	Game               *game.Game
+	mu                 sync.Mutex
+	incomingMoves      chan *playerMove
+	disconnectedPlayer chan *player.Player
+	unregister         chan *player.Player
+	moveCalculator     MoveCalculator
+	moveTimeout        time.Duration
+	rematchVotes       map[string]bool
+	Done               chan struct{} // Channel to signal the room to stop
 }
 
 // NewRoom creates a new game room.
 func NewRoom(id string, calculator MoveCalculator, timeout time.Duration) *Room {
 	return &Room{
-		ID:             id,
-		Players:        make([]*player.Player, 0, 2),
-		PlayerMarkMap:  make(map[string]game.PlayerMark),
-		Game:           game.NewGame(),
-		incomingMoves:  make(chan *playerMove),
-		unregister:     make(chan *player.Player),
-		moveCalculator: calculator,
-		moveTimeout:    timeout,
-		rematchVotes:   make(map[string]bool),
-		Done:           make(chan struct{}), // Initialize the done channel
+		ID:                 id,
+		Players:            make([]*player.Player, 0, 2),
+		PlayerMarkMap:      make(map[string]game.PlayerMark),
+		Game:               game.NewGame(),
+		incomingMoves:      make(chan *playerMove),
+		disconnectedPlayer: make(chan *player.Player),
+		unregister:         make(chan *player.Player),
+		moveCalculator:     calculator,
+		moveTimeout:        timeout,
+		rematchVotes:       make(map[string]bool),
+		Done:               make(chan struct{}), // Initialize the done channel
 	}
 }
 
@@ -61,16 +68,19 @@ func (r *Room) AddPlayer(p *player.Player) {
 	r.Players = append(r.Players, p)
 }
 
-// Broadcast sends a message to all players in the room.
+// Broadcast sends a message to all connected players in the room.
 func (r *Room) Broadcast(message *proto.ServerToClientMessage) {
+	data, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("error marshalling message: %v", err)
+		return
+	}
+
 	for _, p := range r.Players {
-		data, err := json.Marshal(message)
-		if err != nil {
-			log.Printf("error marshalling message: %v", err)
-			continue
-		}
-		if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Printf("error writing message to player %s: %v", p.ID, err)
+		if p.Status == player.StatusConnected {
+			if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				log.Printf("error writing message to player %s: %v", p.ID, err)
+			}
 		}
 	}
 }
@@ -79,6 +89,11 @@ func (r *Room) Broadcast(message *proto.ServerToClientMessage) {
 func (r *Room) HandleMessage(p *player.Player, rawMessage []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if p.Status == player.StatusDisconnected {
+		log.Printf("ignoring message from disconnected player %s", p.ID)
+		return
+	}
 
 	var message proto.ClientToServerMessage
 	if err := json.Unmarshal(rawMessage, &message); err != nil {
@@ -107,7 +122,6 @@ func (r *Room) HandleMessage(p *player.Player, rawMessage []byte) {
 			return
 		}
 
-		fmt.Printf("Current board: %v\n", r.Game.BoardAsStrings())
 		if err := r.Game.Move(message.Position[0], message.Position[1]); err != nil {
 			log.Printf("invalid move from player %s: %v", p.ID, err)
 			return
@@ -129,15 +143,27 @@ func (r *Room) HandleMessage(p *player.Player, rawMessage []byte) {
 		log.Printf("Player %s voted for a rematch.", p.ID)
 		r.rematchVotes[p.ID] = true
 
-		if len(r.rematchVotes) == len(r.Players) && len(r.Players) == 2 {
-			log.Printf("All players voted for a rematch in room %s. Resetting game.", r.ID)
+		// Check if the other player is a bot, if so, auto-accept rematch
+		var otherPlayerIsBot bool
+		for _, other := range r.Players {
+			if other.ID != p.ID && other.IsBot {
+				otherPlayerIsBot = true
+				break
+			}
+		}
+
+		if otherPlayerIsBot || (len(r.rematchVotes) == len(r.Players) && len(r.Players) == 2) {
+			log.Printf("All players voted for a rematch in room %s (or bot auto-accepted). Resetting game.", r.ID)
 			r.resetGameForRematch()
 		} else {
+			// Notify human opponent that a rematch has been requested
 			for _, otherPlayer := range r.Players {
 				if otherPlayer.ID != p.ID {
 					msg := &proto.ServerToClientMessage{Type: "rematch_requested"}
 					data, _ := json.Marshal(msg)
-					otherPlayer.Conn.WriteMessage(websocket.TextMessage, data)
+					if otherPlayer.Status == player.StatusConnected {
+						otherPlayer.Conn.WriteMessage(websocket.TextMessage, data)
+					}
 				}
 			}
 		}
@@ -162,7 +188,9 @@ func (r *Room) resetGameForRematch() {
 			Mark: game.PlayerMark(r.PlayerMarkMap[p.ID]),
 		}
 		data, _ := json.Marshal(assignmentMessage)
-		p.Conn.WriteMessage(websocket.TextMessage, data)
+		if p.Status == player.StatusConnected {
+			p.Conn.WriteMessage(websocket.TextMessage, data)
+		}
 	}
 
 	initialMessage := &proto.ServerToClientMessage{
@@ -177,7 +205,7 @@ func (r *Room) resetGameForRematch() {
 // Start starts the game room, launching the main game loop and listening for player disconnections.
 func (r *Room) Start(unregisterPlayer chan<- *player.Player) {
 	for _, p := range r.Players {
-		go r.readPump(p)
+		go r.ReadPump(p)
 	}
 
 	go r.run()
@@ -187,17 +215,21 @@ func (r *Room) Start(unregisterPlayer chan<- *player.Player) {
 	}
 }
 
-// readPump pumps messages from the websocket connection to the room's incomingMoves channel.
-func (r *Room) readPump(p *player.Player) {
+// ReadPump pumps messages from the websocket connection to the room's incomingMoves channel.
+func (r *Room) ReadPump(p *player.Player) {
 	defer func() {
-		r.unregister <- p
 		p.Conn.Close()
+		r.mu.Lock()
+		p.Status = player.StatusDisconnected
+		p.LastSeen = time.Now()
+		r.mu.Unlock()
+		r.disconnectedPlayer <- p
 	}()
 
 	for {
 		_, msg, err := p.Conn.ReadMessage()
 		if err != nil {
-			log.Printf("Player %s disconnected from room %s: %v", p.ID, r.ID, err)
+			log.Printf("Player %s connection error in room %s: %v", p.ID, r.ID, err)
 			return
 		}
 		r.incomingMoves <- &playerMove{player: p, message: msg}
@@ -206,8 +238,15 @@ func (r *Room) readPump(p *player.Player) {
 
 // run is the main game loop for the room.
 func (r *Room) run() {
-	timer := time.NewTimer(r.moveTimeout)
-	defer timer.Stop()
+	moveTimer := time.NewTimer(r.moveTimeout)
+	pingTicker := time.NewTicker(heartbeatInterval)
+	cleanupTicker := time.NewTicker(reconnectionGracePeriod)
+
+	defer func() {
+		moveTimer.Stop()
+		pingTicker.Stop()
+		cleanupTicker.Stop()
+	}()
 
 	for {
 		var currentPlayer *player.Player
@@ -223,7 +262,11 @@ func (r *Room) run() {
 			return // End game if something is wrong
 		}
 
-		timer.Reset(r.moveTimeout)
+		if currentPlayer.Status == player.StatusConnected {
+			moveTimer.Reset(r.moveTimeout)
+		} else {
+			moveTimer.Reset(1 * time.Second) // shorter timeout for disconnected players
+		}
 
 		select {
 		case <-r.Done:
@@ -231,17 +274,28 @@ func (r *Room) run() {
 			return
 
 		case move := <-r.incomingMoves:
-			if !timer.Stop() {
-				<-timer.C // Drain the timer
+			if !moveTimer.Stop() {
+				<-moveTimer.C // Drain the timer
 			}
 			r.HandleMessage(move.player, move.message)
 
-		case <-timer.C:
+		case p := <-r.disconnectedPlayer:
+			log.Printf("Player %s marked as disconnected in room %s.", p.ID, r.ID)
+			// Notify other players
+			for _, other := range r.Players {
+				if other.ID != p.ID && other.Status == player.StatusConnected {
+					msg := &proto.ServerToClientMessage{Type: "opponent_disconnected"}
+					data, _ := json.Marshal(msg)
+					other.Conn.WriteMessage(websocket.TextMessage, data)
+				}
+			}
+
+		case <-moveTimer.C:
 			if r.Game.Winner != game.None {
-				log.Printf("Game in room %s is over. No proxy move needed.", r.ID)
 				continue
 			}
 
+			log.Printf("Player %s timed out.", currentPlayer.ID)
 			row, col := r.moveCalculator.CalculateNextMove(r.Game.BoardAsStrings(), r.Game.CurrentTurn, "medium")
 
 			if row != -1 && col != -1 {
@@ -250,6 +304,26 @@ func (r *Room) run() {
 				moveBytes, _ := json.Marshal(moveMsg)
 				r.HandleMessage(currentPlayer, moveBytes)
 			}
+
+		case <-pingTicker.C:
+			for _, p := range r.Players {
+				if p.Status == player.StatusConnected {
+					if err := p.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+						log.Printf("Failed to send ping to player %s, assuming disconnect: %v", p.ID, err)
+						// The readPump will catch the resulting connection error
+					}
+				}
+			}
+
+		case <-cleanupTicker.C:
+			r.mu.Lock()
+			for _, p := range r.Players {
+				if p.Status == player.StatusDisconnected && time.Since(p.LastSeen) > reconnectionGracePeriod {
+					log.Printf("Player %s exceeded reconnection grace period. Removing from room %s.", p.ID, r.ID)
+					r.unregister <- p
+				}
+			}
+			r.mu.Unlock()
 		}
 	}
 }

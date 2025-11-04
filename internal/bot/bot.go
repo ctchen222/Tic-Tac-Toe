@@ -93,8 +93,9 @@ func (bc *BotConnection) Close() error {
 // NewBotPlayer creates a new player instance that is a bot.
 func NewBotPlayer(difficulty string) *player.Player {
 	botID := "bot-" + uuid.New().String()[:8]
-	return &player.Player{
-		ID:   botID,
-		Conn: NewBotConnection(botID, difficulty),
-	}
+	botConn := NewBotConnection(botID, difficulty)
+	p := player.NewPlayer(botID, botConn)
+	p.IsBot = true
+	return p
 }
+
