@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"ctchen222/Tic-Tac-Toe/internal/bot"
 	"ctchen222/Tic-Tac-Toe/internal/game"
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
@@ -15,9 +16,33 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const moveTimeout = 15 * time.Second
+
+var (
+	activeRoomsCounter metric.Int64UpDownCounter
+	gamesPlayedCounter metric.Int64Counter
+
+	tracer = otel.Tracer("hub")
+	meter  = otel.Meter("hub")
+)
+
+func init() {
+	var err error
+	activeRoomsCounter, err = meter.Int64UpDownCounter("active_rooms", metric.WithDescription("The number of active rooms."))
+	if err != nil {
+		panic(err)
+	}
+	gamesPlayedCounter, err = meter.Int64Counter("games_played_total", metric.WithDescription("The total number of games played."))
+	if err != nil {
+		panic(err)
+	}
+}
 
 // Hub manages all the rooms and players.
 type Hub struct {
@@ -46,6 +71,12 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case req := <-h.register:
+			ctx, span := tracer.Start(req.Ctx, "hub.register", trace.WithAttributes(
+				attribute.String("player.id", req.Player.ID),
+				attribute.String("mode", req.Mode),
+				attribute.Bool("is_reconnect", req.PlayerID != ""),
+			))
+
 			log.Printf("Received registration request from player %s", req.Player.ID)
 			// Handle reconnection
 			if req.PlayerID != "" {
@@ -83,6 +114,7 @@ func (h *Hub) Run() {
 					// Optional: Send a rejection message to the client
 					req.Player.Conn.Close()
 				}
+				span.End()
 				continue
 			}
 
@@ -106,6 +138,7 @@ func (h *Hub) Run() {
 				}
 
 				h.rooms[roomID] = newRoom
+				activeRoomsCounter.Add(ctx, 1)
 				go newRoom.Start(h.unregister)
 
 				log.Printf("Room %s created for bot match with player %s and bot %s", roomID, player1.ID, player2.ID)
@@ -120,8 +153,12 @@ func (h *Hub) Run() {
 			} else {
 				h.matchManager.AddPlayer(req.Player)
 			}
+			span.End()
 
 		case p := <-h.unregister:
+			ctx := context.Background()
+			_, span := tracer.Start(ctx, "hub.unregister", trace.WithAttributes(attribute.String("player.id", p.ID)))
+
 			log.Printf("Unregister request for player %s", p.ID)
 			h.matchManager.RemovePlayer(p.ID) // Remove from waiting list just in case
 
@@ -164,6 +201,8 @@ func (h *Hub) Run() {
 				if r, ok := h.rooms[roomToDeleteID]; ok {
 					close(r.Done) // Signal the room's goroutines to stop
 					delete(h.rooms, roomToDeleteID)
+					activeRoomsCounter.Add(ctx, -1)
+					gamesPlayedCounter.Add(ctx, 1)
 					log.Printf("Room %s closed.", roomToDeleteID)
 				}
 			}
@@ -179,8 +218,12 @@ func (h *Hub) Run() {
 				// Add them back to the matchmaker
 				h.matchManager.AddPlayer(playerToRequeue)
 			}
+			span.End()
 
 		case pair := <-h.matchManager.MatchedPair():
+			ctx := context.Background() // Should ideally come from players
+			_, span := tracer.Start(ctx, "hub.create_match")
+
 			player1 := pair[0]
 			player2 := pair[1]
 
@@ -198,6 +241,7 @@ func (h *Hub) Run() {
 			}
 
 			h.rooms[roomID] = newRoom
+			activeRoomsCounter.Add(ctx, 1)
 			go newRoom.Start(h.unregister)
 
 			log.Printf("Room %s created with players %s and %s", roomID, player1.ID, player2.ID)
@@ -209,6 +253,7 @@ func (h *Hub) Run() {
 				Next:  newRoom.Game.CurrentTurn,
 			}
 			newRoom.Broadcast(initialMessage)
+			span.End()
 		}
 	}
 }

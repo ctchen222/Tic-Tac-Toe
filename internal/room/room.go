@@ -1,6 +1,7 @@
 package room
 
 import (
+	"context"
 	"ctchen222/Tic-Tac-Toe/internal/game"
 	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/internal/validator"
@@ -11,6 +12,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -18,6 +22,7 @@ const (
 )
 
 var reconnectionGracePeriod = 60 * time.Second
+var tracer = otel.Tracer("room")
 
 // MoveCalculator defines an interface for an agent that can calculate a game move.
 type MoveCalculator interface {
@@ -87,6 +92,10 @@ func (r *Room) Broadcast(message *proto.ServerToClientMessage) {
 
 // HandleMessage handles a message from a player.
 func (r *Room) HandleMessage(p *player.Player, rawMessage []byte) {
+	ctx := context.Background()
+	ctx, span := tracer.Start(ctx, "room.handle_message")
+	defer span.End()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -101,13 +110,22 @@ func (r *Room) HandleMessage(p *player.Player, rawMessage []byte) {
 		return
 	}
 
-	validate := validator.GetValidator()
-	if err := validate.Struct(message); err != nil {
+	if err := validator.GetValidator().Struct(message); err != nil {
 		log.Printf("invalid message from player %s: %v", p.ID, err)
 		return
 	}
 
+	span.SetAttributes(attribute.String("message.type", message.Type))
+
 	if message.Type == "move" {
+		_, moveSpan := tracer.Start(ctx, "room.move", trace.WithAttributes(
+			attribute.String("player.id", p.ID),
+			attribute.String("room.id", r.ID),
+			attribute.Int("move.row", message.Position[0]),
+			attribute.Int("move.col", message.Position[1]),
+		))
+		defer moveSpan.End()
+
 		if r.Game.Winner != game.None || r.Game.IsDraw() {
 			log.Printf("Player %s attempted to move, but game is already over.", p.ID)
 			return
@@ -124,8 +142,10 @@ func (r *Room) HandleMessage(p *player.Player, rawMessage []byte) {
 
 		if err := r.Game.Move(message.Position[0], message.Position[1]); err != nil {
 			log.Printf("invalid move from player %s: %v", p.ID, err)
+			moveSpan.SetAttributes(attribute.Bool("move.valid", false))
 			return
 		}
+		moveSpan.SetAttributes(attribute.Bool("move.valid", true))
 
 		response := &proto.ServerToClientMessage{
 			Type:   "update",

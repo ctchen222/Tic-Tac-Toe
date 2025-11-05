@@ -71,18 +71,6 @@ func (g *Game) BoardAsStrings() [][]PlayerMark {
 	return board
 }
 
-// ToArray converts the game board to a slice of slices (deprecated, use BoardAsStrings).
-func (g *Game) ToArray() [][]string {
-	board := make([][]string, 3)
-	for i := 0; i < 3; i++ {
-		board[i] = make([]string, 3)
-		for j := 0; j < 3; j++ {
-			board[i][j] = string(g.Board[i][j])
-		}
-	}
-	return board
-}
-
 func (g *Game) checkWinner() PlayerMark {
 	// Check rows
 	for i := range [3]int{} {
