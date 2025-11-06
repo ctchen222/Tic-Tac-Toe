@@ -1,0 +1,55 @@
+services:
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686" # Jaeger UI
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317" # OTLP gRPC endpoint
+      - "8889:8889" # Prometheus scraping endpoint
+    depends_on:
+      - jaeger
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command: --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  grafana:
+    image: grafana/grafana:latest
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  game-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      - otel-collector
+    environment:
+      # This tells the Go app's OTLP exporter where to send traces
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
