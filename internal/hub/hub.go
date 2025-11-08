@@ -2,20 +2,15 @@ package hub
 
 import (
 	"context"
-	"ctchen222/Tic-Tac-Toe/internal/bot"
-	"ctchen222/Tic-Tac-Toe/internal/game"
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
-	"ctchen222/Tic-Tac-Toe/internal/match"
 	"ctchen222/Tic-Tac-Toe/internal/player"
+	"ctchen222/Tic-Tac-Toe/internal/repository"
 	"ctchen222/Tic-Tac-Toe/internal/room"
-	"ctchen222/Tic-Tac-Toe/pkg/proto"
-	"encoding/json"
 	"log"
-	"math/rand/v2"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -27,9 +22,8 @@ const moveTimeout = 15 * time.Second
 var (
 	activeRoomsCounter metric.Int64UpDownCounter
 	gamesPlayedCounter metric.Int64Counter
-
-	tracer = otel.Tracer("hub")
-	meter  = otel.Meter("hub")
+	// tracer             = otel.Tracer("hub")
+	meter = otel.Meter("hub")
 )
 
 func init() {
@@ -38,259 +32,102 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+
 	gamesPlayedCounter, err = meter.Int64Counter("games_played_total", metric.WithDescription("The total number of games played."))
 	if err != nil {
 		panic(err)
 	}
 }
 
-// Hub manages all the rooms and players.
+// Hub manages player connections and matchmaking notifications for a single server instance.
 type Hub struct {
-	rooms        map[string]*room.Room
-	register     chan *types.RegistrationRequest
-	unregister   chan *player.Player
-	matchManager *match.MatchManager
+	rdb             *redis.Client
+	gameRepo        repository.GameRepository
+	playerRepo      repository.PlayerRepository
+	matchmakingRepo repository.MatchmakingRepository
+	serverID        string
+	localPlayers    map[string]*player.Player
+	localRooms      map[string]*room.Room // room is not imported, but it's used here. Need to add import.
+
+	register   chan *types.RegistrationRequest
+	unregister chan *player.Player
 }
 
 // NewHub creates a new hub.
-func NewHub() *Hub {
+func NewHub(gameRepo repository.GameRepository, playerRepo repository.PlayerRepository, matchmakingRepo repository.MatchmakingRepository, rdb *redis.Client) *Hub {
 	return &Hub{
-		rooms:        make(map[string]*room.Room),
-		register:     make(chan *types.RegistrationRequest),
-		unregister:   make(chan *player.Player),
-		matchManager: match.NewMatchManager(),
+		rdb:             rdb,
+		gameRepo:        gameRepo,
+		playerRepo:      playerRepo,
+		matchmakingRepo: matchmakingRepo,
+		serverID:        uuid.New().String(),
+		localPlayers:    make(map[string]*player.Player),
+		localRooms:      make(map[string]*room.Room),
+		register:        make(chan *types.RegistrationRequest),
+		unregister:      make(chan *player.Player),
 	}
 }
 
 // Run starts the hub.
 func (h *Hub) Run() {
-	go h.matchManager.Run()
+	log.Printf("Hub starting with Server ID: %s", h.serverID)
 
-	moveCalculator := &bot.BotMoveCalculator{}
+	go h.runMatcher(context.Background())
+	go h.runEventSubscriber(context.Background())
 
 	for {
 		select {
 		case req := <-h.register:
-			ctx, span := tracer.Start(req.Ctx, "hub.register", trace.WithAttributes(
+			traceCtx, span := tracer.Start(req.Ctx, "hub.register", trace.WithAttributes(
 				attribute.String("player.id", req.Player.ID),
-				attribute.String("mode", req.Mode),
-				attribute.Bool("is_reconnect", req.PlayerID != ""),
+				attribute.String("server.id", h.serverID),
 			))
 
+			hubCtx := context.Background()
 			log.Printf("Received registration request from player %s", req.Player.ID)
-			// Handle reconnection
-			if req.PlayerID != "" {
-				log.Printf("Player %s attempting to reconnect", req.PlayerID)
-				room, p := h.findPlayerInRooms(req.PlayerID)
-				if room != nil && p != nil && p.Status == player.StatusDisconnected {
-					log.Printf("Player %s found in room %s. Re-establishing connection.", p.ID, room.ID)
-					p.Conn = req.Player.Conn
-					p.Status = player.StatusConnected
-					p.LastSeen = time.Now()
 
-					// Start a new readPump for the reconnected player
-					go room.ReadPump(p)
+			h.localPlayers[req.Player.ID] = req.Player
 
-					// Send reconnected message and full game state
-					reconnectedMsg := &proto.ServerToClientMessage{Type: "reconnected"}
-					data, _ := json.Marshal(reconnectedMsg)
-					p.Conn.WriteMessage(websocket.TextMessage, data)
-
-					updateMsg := &proto.ServerToClientMessage{
-						Type:   "update",
-						Board:  room.Game.BoardAsStrings(),
-						Next:   room.Game.CurrentTurn,
-						Winner: room.Game.Winner,
-					}
-					data, _ = json.Marshal(updateMsg)
-					p.Conn.WriteMessage(websocket.TextMessage, data)
-
-					// Notify opponent
-					opponentReconnectedMsg := &proto.ServerToClientMessage{Type: "opponent_reconnected"}
-					room.Broadcast(opponentReconnectedMsg)
-
-				} else {
-					log.Printf("Could not find disconnected player %s. Rejecting reconnection.", req.PlayerID)
-					// Optional: Send a rejection message to the client
-					req.Player.Conn.Close()
-				}
-				span.End()
+			roomID, status, err := h.playerRepo.FindForReconnection(hubCtx, req.Player.ID)
+			if err != nil && err != redis.Nil {
+				log.Printf("Error finding player %s for reconnection: %v", req.Player.ID, err)
 				continue
 			}
 
-			// Handle new player registration
-			if req.Mode == "bot" {
-				log.Printf("Creating bot match for player %s", req.Player.ID)
-				player1 := req.Player
-				player2 := bot.NewBotPlayer(req.Difficulty)
-
-				roomID := uuid.New().String()
-				newRoom := room.NewRoom(roomID, moveCalculator, moveTimeout)
-				newRoom.AddPlayer(player1)
-				newRoom.AddPlayer(player2)
-
-				if rand.N(2) == 0 {
-					newRoom.PlayerMarkMap[player1.ID] = game.PlayerX
-					newRoom.PlayerMarkMap[player2.ID] = game.PlayerO
-				} else {
-					newRoom.PlayerMarkMap[player1.ID] = game.PlayerO
-					newRoom.PlayerMarkMap[player2.ID] = game.PlayerX
-				}
-
-				h.rooms[roomID] = newRoom
-				activeRoomsCounter.Add(ctx, 1)
-				go newRoom.Start(h.unregister)
-
-				log.Printf("Room %s created for bot match with player %s and bot %s", roomID, player1.ID, player2.ID)
-
-				h.BroadcastPlayerMarkMessage(newRoom)
-				initialMessage := &proto.ServerToClientMessage{
-					Type:  "update",
-					Board: newRoom.Game.BoardAsStrings(),
-					Next:  newRoom.Game.CurrentTurn,
-				}
-				newRoom.Broadcast(initialMessage)
+			// Only handle as a reconnection if the player was in a room AND was disconnected.
+			if roomID != "" && status == player.StatusDisconnected {
+				log.Printf("Registering reconnected player %s to local room %s", req.Player.ID, roomID)
+				h.handleReconnectionRegistration(hubCtx, req.Player, roomID)
+				span.End()
 			} else {
-				h.matchManager.AddPlayer(req.Player)
+				// All other cases are treated as a new registration.
+				if err := h.playerRepo.SetInitialState(hubCtx, req.Player.ID, h.serverID); err != nil {
+					log.Printf("Failed to set player info in Redis for %s: %v", req.Player.ID, err)
+					continue
+				}
+
+				if req.Mode == "bot" {
+					h.registerBotGame(hubCtx, req)
+				} else {
+					h.queuePlayerForMatchmaking(hubCtx, req)
+				}
+				span.End()
 			}
-			span.End()
+			_ = traceCtx
 
 		case p := <-h.unregister:
-			ctx := context.Background()
-			_, span := tracer.Start(ctx, "hub.unregister", trace.WithAttributes(attribute.String("player.id", p.ID)))
+			hubCtx := context.Background()
+			log.Printf("Player %s unregistered.", p.ID)
 
-			log.Printf("Unregister request for player %s", p.ID)
-			h.matchManager.RemovePlayer(p.ID) // Remove from waiting list just in case
+			delete(h.localPlayers, p.ID)
 
-			var playerToRequeue *player.Player
-			var roomToDeleteID string
-
-			// Find the room the player was in and the other player
-			for roomID, r := range h.rooms {
-				isPlayerInRoom := false
-				var otherPlayer *player.Player
-
-				// Create a copy of the players slice to safely iterate over
-				playersInRoom := make([]*player.Player, len(r.Players))
-				copy(playersInRoom, r.Players)
-
-				for _, roomPlayer := range playersInRoom {
-					if roomPlayer.ID == p.ID {
-						isPlayerInRoom = true
-					} else {
-						otherPlayer = roomPlayer
-					}
-				}
-
-				if isPlayerInRoom {
-					// This unregister was likely triggered by a timeout cleanup.
-					// If there were 2 players, the other one should be re-queued.
-					if len(playersInRoom) == 2 && otherPlayer != nil {
-						playerToRequeue = otherPlayer
-						log.Printf("Player %s's opponent timed out. Re-queuing player %s.", otherPlayer.ID, otherPlayer.ID)
-					}
-
-					// Mark the room for deletion
-					roomToDeleteID = roomID
-					break
-				}
+			if err := h.matchmakingRepo.RemoveFromQueue(hubCtx, p.ID); err != nil {
+				log.Printf("Failed to remove player %s from matchmaking queue: %v", p.ID, err)
 			}
 
-			// Perform actions outside the loop
-			if roomToDeleteID != "" {
-				if r, ok := h.rooms[roomToDeleteID]; ok {
-					close(r.Done) // Signal the room's goroutines to stop
-					delete(h.rooms, roomToDeleteID)
-					activeRoomsCounter.Add(ctx, -1)
-					gamesPlayedCounter.Add(ctx, 1)
-					log.Printf("Room %s closed.", roomToDeleteID)
-				}
+			if err := h.playerRepo.SetOffline(hubCtx, p.ID); err != nil {
+				log.Printf("Failed to set player %s status to offline: %v", p.ID, err)
 			}
-
-			if playerToRequeue != nil {
-				// Send a message to the player being re-queued
-				requeueMsg := &proto.ServerToClientMessage{Type: "requeue", Reason: "opponent_left"}
-				data, _ := json.Marshal(requeueMsg)
-				if playerToRequeue.Status == player.StatusConnected {
-					playerToRequeue.Conn.WriteMessage(websocket.TextMessage, data)
-				}
-
-				// Add them back to the matchmaker
-				h.matchManager.AddPlayer(playerToRequeue)
-			}
-			span.End()
-
-		case pair := <-h.matchManager.MatchedPair():
-			ctx := context.Background() // Should ideally come from players
-			_, span := tracer.Start(ctx, "hub.create_match")
-
-			player1 := pair[0]
-			player2 := pair[1]
-
-			roomID := uuid.New().String()
-			newRoom := room.NewRoom(roomID, moveCalculator, moveTimeout)
-			newRoom.AddPlayer(player1)
-			newRoom.AddPlayer(player2)
-
-			if rand.N(2) == 0 {
-				newRoom.PlayerMarkMap[player1.ID] = game.PlayerX
-				newRoom.PlayerMarkMap[player2.ID] = game.PlayerO
-			} else {
-				newRoom.PlayerMarkMap[player1.ID] = game.PlayerO
-				newRoom.PlayerMarkMap[player2.ID] = game.PlayerX
-			}
-
-			h.rooms[roomID] = newRoom
-			activeRoomsCounter.Add(ctx, 1)
-			go newRoom.Start(h.unregister)
-
-			log.Printf("Room %s created with players %s and %s", roomID, player1.ID, player2.ID)
-
-			h.BroadcastPlayerMarkMessage(newRoom)
-			initialMessage := &proto.ServerToClientMessage{
-				Type:  "update",
-				Board: newRoom.Game.BoardAsStrings(),
-				Next:  newRoom.Game.CurrentTurn,
-			}
-			newRoom.Broadcast(initialMessage)
-			span.End()
-		}
-	}
-}
-
-func (h *Hub) findPlayerInRooms(playerID string) (*room.Room, *player.Player) {
-	for _, r := range h.rooms {
-		for _, p := range r.Players {
-			if p.ID == playerID {
-				return r, p
-			}
-		}
-	}
-	return nil, nil
-}
-
-func (h *Hub) BroadcastPlayerMarkMessage(room *room.Room) {
-	for _, p := range room.Players {
-		if p.Status != player.StatusConnected {
-			continue
-		}
-		mark, ok := room.PlayerMarkMap[p.ID]
-		if !ok {
-			log.Printf("No mark assigned for player %s in room %s", p.ID, room.ID)
-			continue
-		}
-		assignmentMessage := &proto.PlayerAssignmentMessage{
-			Type:     "assignment",
-			PlayerID: p.ID,
-			Mark:     mark,
-		}
-
-		data, err := json.Marshal(assignmentMessage)
-		if err != nil {
-			log.Printf("Error marshalling assignment message for player %s: %v", p.ID, err)
-		}
-		if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Printf("Error sending assignment message to player %s: %v", p.ID, err)
 		}
 	}
 }
@@ -304,3 +141,4 @@ func (h *Hub) Register() chan<- *types.RegistrationRequest {
 func (h *Hub) Unregister() chan<- *player.Player {
 	return h.unregister
 }
+

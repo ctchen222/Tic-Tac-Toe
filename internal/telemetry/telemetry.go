@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -22,8 +23,14 @@ import (
 func InitOtel() (func(context.Context) error, error) {
 	ctx := context.Background()
 
+	// Get OTLP endpoint from environment variable or use default
+	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otelEndpoint == "" {
+		otelEndpoint = "localhost:4317"
+	}
+
 	// --- Create gRPC connection ---
-	conn, err := grpc.DialContext(ctx, "otel-collector:4317",
+	conn, err := grpc.DialContext(ctx, otelEndpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {

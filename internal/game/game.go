@@ -1,7 +1,6 @@
 package game
 
 import (
-	"errors"
 	"math/rand/v2"
 )
 
@@ -21,109 +20,80 @@ const (
 	// Board boundaries
 	BorderMin = 0
 	BorderMax = 2
+
+	// Redis hash fields
+	FieldBoard    = "board"
+	FieldPlayerX  = "player_x"
+	FieldPlayerO  = "player_o"
+	FieldNextTurn = "next_turn"
+	FieldWinner   = "winner"
+	FieldStatus   = "status"
 )
 
-type Game struct {
+// GameStateDTO is a Data Transfer Object for game state.
+// It's used to pass game state information around without holding state in memory.
+type GameStateDTO struct {
 	Board       [3][3]PlayerMark
 	CurrentTurn PlayerMark
 	Winner      PlayerMark
+	IsDraw      bool
+	PlayerXID   string
+	PlayerOID   string
 }
 
-func NewGame() *Game {
-	return &Game{
-		Board:       [3][3]PlayerMark{},
-		CurrentTurn: randomlyChooseFirstPlayer(),
-		Winner:      None,
+// RandomlyChooseFirstPlayer randomly selects who goes first.
+func RandomlyChooseFirstPlayer() PlayerMark {
+	if rand.IntN(2) == 0 {
+		return PlayerX
 	}
+	return PlayerO
 }
 
-func (g *Game) Move(row, col int) error {
-	if g.Winner != None {
-		return errors.New("game already finished")
+// BoardArrayToSlice converts a 3x3 array to a slice of slices.
+func BoardArrayToSlice(board [3][3]PlayerMark) [][]PlayerMark {
+	slice := make([][]PlayerMark, 3)
+	for i := 0; i < 3; i++ {
+		slice[i] = make([]PlayerMark, 3)
+		copy(slice[i], board[i][:])
 	}
-	if row < BorderMin || row > BorderMax || col < BorderMin || col > BorderMax {
-		return errors.New("invalid move")
-	}
-	if g.Board[row][col] != None {
-		return errors.New("cell already occupied")
-	}
-
-	g.Board[row][col] = g.CurrentTurn
-	if g.CurrentTurn == PlayerX {
-		g.CurrentTurn = PlayerO
-	} else {
-		g.CurrentTurn = PlayerX
-	}
-
-	g.Winner = g.checkWinner()
-	return nil
+	return slice
 }
 
-// BoardAsStrings converts the game board to a dynamic slice of slices of strings.
-func (g *Game) BoardAsStrings() [][]PlayerMark {
-	board := make([][]PlayerMark, 3)
-	for i := range [3]int{} {
-		board[i] = make([]PlayerMark, 3)
-		for j := range [3]int{} {
-			board[i][j] = g.Board[i][j]
-		}
-	}
-	return board
-}
-
-func (g *Game) checkWinner() PlayerMark {
+// CheckWinner checks if there is a winner on the board. Returns the winner's mark or None.
+func CheckWinner(board [3][3]PlayerMark) PlayerMark {
 	// Check rows
 	for i := range [3]int{} {
-		if g.Board[i][0] != None && g.Board[i][0] == g.Board[i][1] && g.Board[i][1] == g.Board[i][2] {
-			return g.Board[i][0]
+		if board[i][0] != None && board[i][0] == board[i][1] && board[i][1] == board[i][2] {
+			return board[i][0]
 		}
 	}
 
 	// Check columns
 	for i := range [3]int{} {
-		if g.Board[0][i] != None && g.Board[0][i] == g.Board[1][i] && g.Board[1][i] == g.Board[2][i] {
-			return g.Board[0][i]
+		if board[0][i] != None && board[0][i] == board[1][i] && board[1][i] == board[2][i] {
+			return board[0][i]
 		}
 	}
 
 	// Check diagonals
-	if g.Board[0][0] != None && g.Board[0][0] == g.Board[1][1] && g.Board[1][1] == g.Board[2][2] {
-		return g.Board[0][0]
+	if board[0][0] != None && board[0][0] == board[1][1] && board[1][1] == board[2][2] {
+		return board[0][0]
 	}
-	if g.Board[0][2] != None && g.Board[0][2] == g.Board[1][1] && g.Board[1][1] == g.Board[2][0] {
-		return g.Board[0][2]
-	}
-
-	if g.IsDraw() {
-		return PlayerMark(Draw)
+	if board[0][2] != None && board[0][2] == board[1][1] && board[1][1] == board[2][0] {
+		return board[0][2]
 	}
 
 	return None
 }
 
-// IsDraw checks if the game is a draw.
-func (g *Game) IsDraw() bool {
-	// If there is a winner, it's not a draw
-	if g.Winner != None {
-		return false
-	}
-
-	// If there are any empty cells, it's not a draw
+// IsBoardFull checks if the board has any empty cells left.
+func IsBoardFull(board [3][3]PlayerMark) bool {
 	for r := range [3]int{} {
 		for c := range [3]int{} {
-			if g.Board[r][c] == None {
+			if board[r][c] == None {
 				return false
 			}
 		}
 	}
-
-	// No winner and no empty cells means it's a draw
 	return true
-}
-
-func randomlyChooseFirstPlayer() PlayerMark {
-	if rand.IntN(2) == 0 {
-		return PlayerX
-	}
-	return PlayerO
 }

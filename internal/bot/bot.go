@@ -2,37 +2,39 @@ package bot
 
 import (
 	"ctchen222/Tic-Tac-Toe/internal/game"
+	"ctchen222/Tic-Tac-Toe/internal/hub/types"
 	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
+	"io"
 	"log"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // BotConnection simulates a websocket connection for a bot player.
 // It implements the player.Connection interface.
 type BotConnection struct {
-	playerID   string
-	moveChan   chan []byte
-	mark       game.PlayerMark // Stores the bot's mark ('X' or 'O')
-	difficulty string          // Stores the bot's difficulty
+	playerID      string
+	player        *player.Player
+	incomingMoves chan<- *types.PlayerMove
+	mark          game.PlayerMark
+	difficulty    string
 }
 
 // NewBotConnection creates a new connection for a bot.
-func NewBotConnection(playerID string, difficulty string) *BotConnection {
+func NewBotConnection(playerID string, difficulty string, p *player.Player, incomingMoves chan<- *types.PlayerMove) *BotConnection {
 	return &BotConnection{
-		playerID:   playerID,
-		moveChan:   make(chan []byte, 1),
-		difficulty: difficulty,
+		playerID:      playerID,
+		player:        p,
+		incomingMoves: incomingMoves,
+		difficulty:    difficulty,
 	}
 }
 
 // WriteMessage is called by the room to send game state to the bot.
 func (bc *BotConnection) WriteMessage(messageType int, data []byte) error {
 	// First, try to unmarshal as a generic message to find the type
-	var genericMsg map[string]any
+	var genericMsg map[string]interface{}
 	if err := json.Unmarshal(data, &genericMsg); err != nil {
 		return err
 	}
@@ -49,7 +51,7 @@ func (bc *BotConnection) WriteMessage(messageType int, data []byte) error {
 			return err
 		}
 		bc.mark = msg.Mark
-		log.Printf("Bot %s assigned mark: %s", bc.playerID, bc.mark)
+		log.Printf("Bot %s has been assigned mark: '%s'", bc.playerID, bc.mark)
 
 	case "update":
 		var msg proto.ServerToClientMessage
@@ -65,12 +67,22 @@ func (bc *BotConnection) WriteMessage(messageType int, data []byte) error {
 			row, col := CalculateNextMove(msg.Board, bc.mark, bc.difficulty)
 
 			if row != -1 {
+				log.Printf("Bot calculated move: (%d, %d). Injecting into room.", row, col)
 				move := proto.ClientToServerMessage{
 					Type:     "move",
 					Position: []int{row, col},
 				}
 				moveBytes, _ := json.Marshal(move)
-				bc.moveChan <- moveBytes
+
+				// Directly inject the move into the room's incoming channel
+				moveToSend := &types.PlayerMove{
+					Player:  bc.player,
+					Message: moveBytes,
+				}
+				bc.incomingMoves <- moveToSend
+
+			} else {
+				log.Printf("Bot calculated no valid move.")
 			}
 		}
 	}
@@ -78,24 +90,15 @@ func (bc *BotConnection) WriteMessage(messageType int, data []byte) error {
 	return nil
 }
 
-// ReadMessage is called by the room to get the bot's next move.
+// ReadMessage is called by the ReadPump. For a bot, we don't read from a real
+// connection. We return an EOF error immediately to signal the ReadPump to exit,
+// preventing it from blocking forever.
 func (bc *BotConnection) ReadMessage() (int, []byte, error) {
-	// Block until the bot's logic (in WriteMessage) produces a move.
-	move := <-bc.moveChan
-	return 1, move, nil // 1 = TextMessage
+	// Returning an error will cause the ReadPump to terminate, which is what we want.
+	return 0, nil, io.EOF
 }
 
 // Close is a no-op for the bot.
 func (bc *BotConnection) Close() error {
 	return nil
 }
-
-// NewBotPlayer creates a new player instance that is a bot.
-func NewBotPlayer(difficulty string) *player.Player {
-	botID := "bot-" + uuid.New().String()[:8]
-	botConn := NewBotConnection(botID, difficulty)
-	p := player.NewPlayer(botID, botConn)
-	p.IsBot = true
-	return p
-}
-

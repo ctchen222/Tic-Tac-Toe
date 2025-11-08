@@ -20,6 +20,6 @@ type ServerToClientMessage struct {
 // PlayerAssignmentMessage informs a player of their assigned mark.
 type PlayerAssignmentMessage struct {
 	Type     string          `json:"type"`
-	PlayerID string          `json:"playerId"`
+	PlayerID string          `json:"playerId,omitempty"`
 	Mark     game.PlayerMark `json:"mark"`
 }
