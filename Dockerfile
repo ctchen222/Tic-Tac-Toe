@@ -11,7 +11,6 @@ RUN go mod download
 COPY . .
 
 # Build the application
-# CGO_ENABLED=0 is used to build a statically linked binary
 RUN CGO_ENABLED=0 go build -o /server ./cmd/server
 
 # Stage 2: Create the final lightweight image
