@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tic-Tac-Toe</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #e9ecef;
+            color: #343a40;
+            flex-direction: column;
+        }
+        .container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            width: 100%;
+            max-width: 600px;
+            box-sizing: border-box;
+        }
+        h1 {
+            color: #007bff;
+            margin-bottom: 20px;
+        }
+        p {
+            font-size: 1.1em;
+            line-height: 1.6;
+            margin-bottom: 15px;
+        }
+        code {
+            background-color: #f8f9fa;
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            color: #e83e8c;
+        }
+        .status-message {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+            background-color: #ffeeba;
+            color: #856404;
+            border: 1px solid #ffc107;
+        }
+        .error-message {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .success-message {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .button-group button, select {
+            padding: 10px 20px;
+            margin: 10px 5px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.3s ease;
+        }
+        .button-group button:hover {
+            background-color: #0056b3;
+        }
+        select {
+            background-color: #6c757d;
+        }
+        select:hover {
+            background-color: #5a6268;
+        }
+        #gameArea {
+            margin-top: 20px;
+            border-top: 1px solid #eee;
+            padding-top: 20px;
+        }
+        #gameBoard {
+            display: grid;
+            grid-template-columns: repeat(3, 80px);
+            grid-template-rows: repeat(3, 80px);
+            gap: 5px;
+            width: 255px;
+            height: 255px;
+            margin: 20px auto;
+            border: 2px solid #333;
+            background-color: #f0f0f0;
+        }
+        .cell {
+            width: 80px;
+            height: 80px;
+            background-color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 3em;
+            font-weight: bold;
+            cursor: pointer;
+            border: 1px solid #ccc;
+        }
+        .cell:hover {
+            background-color: #e0e0e0;
+        }
+        .cell.x { color: #dc3545; }
+        .cell.o { color: #007bff; }
+        #currentTurnDisplay {
+            font-size: 1.2em;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #007bff;
+        }
+        #rematchButtons {
+            margin-top: 20px;
+        }
+        #rematchButtons button {
+            background-color: #ffc107;
+            color: #333;
+        }
+        #rematchButtons button:hover {
+            background-color: #e0a800;
+        }
+        #rematchButtons button.no {
+            background-color: #6c757d;
+            color: white;
+        }
+        #rematchButtons button.no:hover {
+            background-color: #5a6268;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Tic-Tac-Toe</h1>
+        
+        <div id="modeSelection">
+            <p>請選擇遊戲模式：</p>
+            <div class="button-group">
+                <button id="playBotBtn">機器人對戰</button>
+                <select id="difficultySelect">
+                    <option value="easy">簡單</option>
+                    <option value="medium">中等</option>
+                    <option value="hard">困難</option>
+                </select>
+                <button id="playHumanBtn">連線對戰</button>
+            </div>
+        </div>
+
+        <div id="gameArea" style="display:none;">
+            <p>WebSocket 連線狀態：</p>
+            <p id="wsStatus" class="status-message">等待連線...</p>
+            <p id="currentTurnDisplay"></p>
+            <p id="gameMessage"></p>
+            <div id="gameBoard">
+                <div class="cell" data-index="0"></div>
+                <div class="cell" data-index="1"></div>
+                <div class="cell" data-index="2"></div>
+                <div class="cell" data-index="3"></div>
+                <div class="cell" data-index="4"></div>
+                <div class="cell" data-index="5"></div>
+                <div class="cell" data-index="6"></div>
+                <div class="cell" data-index="7"></div>
+                <div class="cell" data-index="8"></div>
+            </div>
+            <div id="rematchButtons" style="display:none;">
+                <button id="rematchYesBtn">同意重賽</button>
+                <button id="rematchNoBtn" class="no">拒絕重賽</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const modeSelectionElem = document.getElementById('modeSelection');
+        const gameAreaElem = document.getElementById('gameArea');
+        const wsStatusElem = document.getElementById('wsStatus');
+        const currentTurnDisplayElem = document.getElementById('currentTurnDisplay');
+        const gameMessageElem = document.getElementById('gameMessage');
+        const gameBoardElem = document.getElementById('gameBoard');
+        const playBotBtn = document.getElementById('playBotBtn');
+        const playHumanBtn = document.getElementById('playHumanBtn');
+        const difficultySelect = document.getElementById('difficultySelect');
+        const rematchButtonsElem = document.getElementById('rematchButtons');
+        const rematchYesBtn = document.getElementById('rematchYesBtn');
+        const rematchNoBtn = document.getElementById('rematchNoBtn');
+
+        let ws;
+        let currentPlayerMark = ''; // 'X' or 'O'
+        let isMyTurn = false;
+
+        function renderBoard(board) { // board is a 2D array: [[],[],[]]
+            if (!board) {
+                console.error("renderBoard received undefined or null board:", board);
+                return;
+            }
+            const cells = gameBoardElem.children; // cells is a 1D array of 9 elements
+            let k = 0; // Index for the 1D cells array
+            for (let r = 0; r < board.length; r++) { // Iterate rows
+                if (!board[r]) {
+                    console.error("renderBoard received undefined or null row:", board[r], "at row index:", r);
+                    continue; // Skip this row if it's invalid
+                }
+                for (let c = 0; c < board[r].length; c++) { // Iterate columns
+                    const mark = board[r][c];
+                    cells[k].textContent = mark;
+                    cells[k].className = `cell ${mark ? mark.toLowerCase() : ''}`; // Handle empty mark
+                    k++;
+                }
+            }
+        }
+
+        function sendMove(index) {
+            console.log('Attempting to send move:', { index, isMyTurn, wsReadyState: ws ? ws.readyState : 'N/A' });
+            if (ws && ws.readyState === WebSocket.OPEN && isMyTurn) {
+                const row = Math.floor(index / 3);
+                const col = index % 3;
+                const message = {
+                    type: 'move',
+                    position: [row, col], // Changed to [row, col] array
+                };
+                ws.send(JSON.stringify(message));
+                gameMessageElem.textContent = '等待對手回應...';
+                isMyTurn = false; // Assume turn ends after sending move
+            } else if (!isMyTurn) {
+                gameMessageElem.textContent = '現在不是你的回合！';
+            } else {
+                gameMessageElem.textContent = 'WebSocket 未連線或已關閉。';
+            }
+        }
+
+        function sendRematchVote(accept) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const message = {
+                    type: 'rematch',
+                    accept: accept,
+                };
+                ws.send(JSON.stringify(message));
+                rematchButtonsElem.style.display = 'none'; // Hide buttons after voting
+                gameMessageElem.textContent = accept ? '已同意重賽，等待對手回應...' : '已拒絕重賽。';
+            }
+        }
+
+        function connectWebSocket(mode, difficulty = '') {
+            modeSelectionElem.style.display = 'none';
+            gameAreaElem.style.display = 'block';
+            wsStatusElem.textContent = '嘗試連線中...';
+
+            let wsUrl = `ws://${window.location.host}/api/ws`;
+            let params = [];
+
+            params.push(`mode=${mode}`);
+            if (difficulty) {
+                params.push(`difficulty=${difficulty}`);
+            }
+
+            wsUrl += `?${params.join('&')}`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                wsStatusElem.className = 'status-message success-message';
+                wsStatusElem.textContent = `WebSocket 連線成功！模式: ${mode}`;
+                console.log('WebSocket connected');
+                gameMessageElem.textContent = '等待遊戲開始...';
+            };
+
+            ws.onmessage = (event) => {
+                console.log('Received:', event.data);
+                const msg = JSON.parse(event.data);
+                console.log('Parsed message:', msg);
+
+                switch (msg.type) {
+                    case 'assignment': // Player assignment (X or O)
+                        currentPlayerMark = msg.mark;
+                        gameMessageElem.textContent = `你是 ${currentPlayerMark}。`;
+                        console.log('Assigned mark:', currentPlayerMark);
+                        break;
+                    case 'update': // Game state update
+                        console.log('Board received for rendering:', msg.board);
+                        if (!msg.board) {
+                            console.error("Received update message with undefined board:", msg);
+                            gameMessageElem.textContent = "錯誤：收到無效的棋盤狀態。";
+                            return;
+                        }
+                        renderBoard(msg.board);
+                        if (msg.winner) {
+                            gameMessageElem.textContent = `遊戲結束！贏家是 ${msg.winner}！`;
+                            currentTurnDisplayElem.textContent = ''; // Clear turn display
+                            isMyTurn = false;
+                            rematchButtonsElem.style.display = 'block'; // Show rematch buttons
+                        } else if (msg.isDraw) { // Assuming backend sends isDraw
+                            gameMessageElem.textContent = `遊戲結束！平局！`;
+                            currentTurnDisplayElem.textContent = ''; // Clear turn display
+                            isMyTurn = false;
+                            rematchButtonsElem.style.display = 'block'; // Show rematch buttons
+                        }
+                        else if (msg.next) { // Check if Next is defined
+                            currentTurnDisplayElem.textContent = `現在輪到 ${msg.next} 下棋。`;
+                            if (msg.next === currentPlayerMark) {
+                                gameMessageElem.textContent = `輪到你 (${currentPlayerMark}) 下棋。`;
+                                isMyTurn = true;
+                            } else {
+                                gameMessageElem.textContent = `輪到對手 (${msg.next}) 下棋。`;
+                                isMyTurn = false;
+                            }
+                        } else {
+                            gameMessageElem.textContent = '遊戲狀態更新。'; // Generic message if Next is not defined
+                            isMyTurn = false;
+                        }
+                        console.log('Game state updated. Next:', msg.next, 'isMyTurn:', isMyTurn, 'currentPlayerMark:', currentPlayerMark);
+                        break;
+                    case 'error':
+                        gameMessageElem.textContent = `錯誤: ${msg.message}`;
+                        break;
+                    case 'rematch_request':
+                        gameMessageElem.textContent = '對手請求重賽！';
+                        rematchButtonsElem.style.display = 'block'; // Show rematch buttons
+                        break;
+                    case 'rematch_successful':
+                        gameMessageElem.textContent = '重賽開始！';
+                        rematchButtonsElem.style.display = 'none'; // Hide buttons
+                        renderBoard(["", "", "", "", "", "", "", "", ""]); // Clear board
+                        currentPlayerMark = ''; // Reset mark, will be reassigned
+                        isMyTurn = false; // Reset turn, will be reassigned
+                        currentTurnDisplayElem.textContent = '';
+                        // Backend will send new assignment and update messages
+                        break;
+                    default:
+                        console.log('Unknown message type:', msg.type);
+                }
+            };
+
+            ws.onclose = (event) => {
+                wsStatusElem.className = 'status-message error-message';
+                wsStatusElem.textContent = `WebSocket 連線關閉: ${event.code} - ${event.reason}`;
+                console.log('WebSocket closed:', event);
+                gameMessageElem.textContent = '遊戲連線已中斷。';
+            };
+
+            ws.onerror = (error) => {
+                wsStatusElem.className = 'status-message error-message';
+                wsStatusElem.textContent = 'WebSocket 連線錯誤！';
+                console.error('WebSocket error:', error);
+                gameMessageElem.textContent = '遊戲連線發生錯誤。';
+            };
+        }
+
+        // Event Listeners for game mode selection
+        playBotBtn.onclick = () => {
+            const difficulty = difficultySelect.value;
+            connectWebSocket('bot', difficulty);
+        };
+        playHumanBtn.onclick = () => connectWebSocket('human');
+
+        // Event Listeners for game board cells
+        gameBoardElem.addEventListener('click', (event) => {
+            const cell = event.target.closest('.cell');
+            if (cell && cell.dataset.index) {
+                const index = parseInt(cell.dataset.index);
+                sendMove(index);
+            }
+        });
+
+        // Event Listeners for rematch buttons
+        rematchYesBtn.onclick = () => sendRematchVote(true);
+        rematchNoBtn.onclick = () => sendRematchVote(false);
+    </script>
+</body>
+</html>
