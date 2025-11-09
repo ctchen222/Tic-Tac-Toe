@@ -5,20 +5,19 @@ import (
 	"log"
 	"sync"
 
+	_ "github.com/glebarez/go-sqlite"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 var (
-	Once sync.Once
-
+	Once   sync.Once
 	DBConn *sqlx.DB
 )
 
 // LocalConnect initializes the database connection pool for a local SQLite database
 // and returns a pointer to the sql.DB instance.
 func LocalConnect(dbPath string) (*sqlx.DB, error) {
-	pool, err := sqlx.Open("sqlite3", dbPath)
+	pool, err := sqlx.Open("sqlite", dbPath)
 	if err != nil {
 		// Return the error instead of fatally exiting
 		return nil, fmt.Errorf("failed to open local database connection: %w", err)
@@ -29,9 +28,9 @@ func LocalConnect(dbPath string) (*sqlx.DB, error) {
 
 func DBConnect() (*sqlx.DB, error) {
 	Once.Do(func() {
-		pool, err := sqlx.Open("sqlite3", "./master.db")
+		pool, err := sqlx.Open("sqlite", "./master.db")
 		if err != nil {
-			log.Fatalf("Failed to open database connection: %v", err)
+			log.Fatalf("Failed to open master database connection: %v", err)
 		}
 		fmt.Println("Connected to master database!")
 		DBConn = pool
