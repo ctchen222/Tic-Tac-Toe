@@ -1,12 +1,7 @@
 # Tic-Tac-Toe
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-80%25-blue)
-![Go Version](https://img.shields.io/badge/go-1.24-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green)
-
 ![](./docs/index.png)\
-A real-time, web-based Tic-Tac-Toe game built with Go and WebSocket. It features player-vs-player and player-vs-bot modes, matchmaking, and a comprehensive observability stack. The frontend is a single-page application with a retro-tech aesthetic.
+A real-time, web-based Tic-Tac-Toe game built with Go and WebSocket. It features player-vs-player and player-vs-bot modes, matchmaking, and a comprehensive observability stack.
 
 ## Features
 
