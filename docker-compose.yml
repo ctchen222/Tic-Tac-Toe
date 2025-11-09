@@ -53,3 +53,4 @@ services:
     environment:
       # This tells the Go app's OTLP exporter where to send traces
       - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
+      - REDIS_CONNSTRING=redis:6379
