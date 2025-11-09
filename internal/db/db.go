@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/jmoiron/sqlx"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 var (
@@ -28,9 +29,9 @@ func LocalConnect(dbPath string) (*sqlx.DB, error) {
 
 func DBConnect() (*sqlx.DB, error) {
 	Once.Do(func() {
-		pool, err := sqlx.Open("sqlite3", "./data/master.db")
+		pool, err := sqlx.Open("sqlite3", "./master.db")
 		if err != nil {
-			log.Fatalf("Failed to open master database connection: %v", err)
+			log.Fatalf("Failed to open database connection: %v", err)
 		}
 		fmt.Println("Connected to master database!")
 		DBConn = pool
@@ -47,7 +48,20 @@ func InitializeDB() error {
 	if _, err := DB.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		return fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
-	log.Println("DB connection initialized.")
+
+	// Create users table if it doesn't exist
+	userSchema := `
+	CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL
+	);`
+
+	if _, err := DB.Exec(userSchema); err != nil {
+		return fmt.Errorf("failed to create users table: %w", err)
+	}
+
+	log.Println("DB connection initialized and schema verified.")
 
 	return nil
 }

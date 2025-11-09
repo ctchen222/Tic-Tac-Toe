@@ -1,12 +1,14 @@
 package server
 
 import (
+	"ctchen222/Tic-Tac-Toe/internal/api/controller"
 	"ctchen222/Tic-Tac-Toe/internal/hub"
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
 	"ctchen222/Tic-Tac-Toe/internal/player"
 	"log"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel"
@@ -18,13 +20,19 @@ import (
 var tracer = otel.Tracer("server")
 
 type Server struct {
-	hub      *hub.Hub
-	upgrader websocket.Upgrader
+	hub            *hub.Hub
+	engine         *gin.Engine
+	upgrader       websocket.Upgrader
+	userController *controller.UserController
 }
 
-func NewServer(h *hub.Hub) *Server {
-	return &Server{
-		hub: h,
+// NewServer creates a new Server instance.
+func NewServer(h *hub.Hub, uc *controller.UserController) *Server {
+	engine := gin.Default()
+	s := &Server{
+		hub:            h,
+		engine:         engine,
+		userController: uc,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -33,25 +41,40 @@ func NewServer(h *hub.Hub) *Server {
 			},
 		},
 	}
+	s.registerHandlers()
+	return s
 }
 
-func (s *Server) RegisterHandlers() {
-	fs := http.FileServer(http.Dir("./web"))
-	http.Handle("/", fs)
-	http.HandleFunc("/ws", s.handleWebSocket)
+func (s *Server) Engine() *gin.Engine {
+	return s.engine
 }
 
-// handleWebSocket's only responsibility is to upgrade the connection and
-// pass a registration request to the hub. It does not distinguish between
-// new and reconnecting players.
-func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	ctx, span := tracer.Start(r.Context(), "server.handleWebSocket", trace.WithAttributes(
-		attribute.String("http.url", r.URL.String()),
-		attribute.String("http.method", r.Method),
+// registerHandlers sets up the routes.
+func (s *Server) registerHandlers() {
+	// Serve the main page
+	s.engine.GET("/", func(c *gin.Context) {
+		c.File("./web/index.html")
+	})
+
+	// API routes
+	api := s.engine.Group("/api")
+	{
+		api.GET("/ws", s.handleWebSocket)
+		api.POST("/register", s.userController.Register)
+		api.POST("/login", s.userController.Login)
+		api.POST("/guest-login", s.userController.GuestLogin)
+	}
+}
+
+// handleWebSocket upgrades the connection and passes a registration request to the hub.
+func (s *Server) handleWebSocket(c *gin.Context) {
+	ctx, span := tracer.Start(c.Request.Context(), "server.handleWebSocket", trace.WithAttributes(
+		attribute.String("http.url", c.Request.URL.String()),
+		attribute.String("http.method", c.Request.Method),
 	))
 	defer span.End()
 
-	conn, err := s.upgrader.Upgrade(w, r, nil)
+	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade connection: %v", err)
 		span.RecordError(err)
@@ -59,8 +82,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get playerID from URL, or generate a new one.
-	playerID := r.URL.Query().Get("playerId")
+	playerID := c.Query("playerId")
 	if playerID == "" {
 		playerID = uuid.New().String()
 	}
@@ -68,25 +90,16 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	p := player.NewPlayer(playerID, conn)
 
-	// Get game mode preferences
-	mode := r.URL.Query().Get("mode")
-	if mode == "" {
-		mode = "human"
-	}
-	difficulty := r.URL.Query().Get("difficulty")
-	if mode == "bot" && difficulty == "" {
-		difficulty = "easy"
-	}
+	mode := c.DefaultQuery("mode", "human")
+	difficulty := c.DefaultQuery("difficulty", "easy")
 	span.SetAttributes(attribute.String("game.mode", mode), attribute.String("game.difficulty", difficulty))
 
-	// Send the registration request to the hub for processing.
 	req := &types.RegistrationRequest{
 		Player:     p,
 		PlayerID:   p.ID,
 		Mode:       mode,
 		Difficulty: difficulty,
-		Ctx:        ctx, // Pass the context with the span
+		Ctx:        ctx,
 	}
 	s.hub.Register() <- req
 }
-
