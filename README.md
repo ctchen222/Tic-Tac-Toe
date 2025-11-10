@@ -1,5 +1,14 @@
 # Tic-Tac-Toe
 
+<!--ts-->
+- [Features](#features)
+- [System Design](#system-design)
+    - [Architecture Diagram](#architecture-diagram)
+- [Getting Started](#getting-started)
+- [Monitoring and Observability](#monitoring-and-observability)
+
+<!--te-->
+
 ![](./docs/index.png)\
 A real-time, web-based Tic-Tac-Toe game built with Go and WebSocket. It features player-vs-player and player-vs-bot modes, matchmaking, and a comprehensive observability stack.
 
@@ -15,7 +24,7 @@ A real-time, web-based Tic-Tac-Toe game built with Go and WebSocket. It features
 - Heartbeat mechanism to detect and manage player disconnections.
 - Reconnection mechanism, enabling players to rejoin their game in the same room after an accidental disconnection.
 - Support for auto-scaling and hot updates for high availability.
-- Comprehensive observability with OpenTelemetry, Jaeger (tracing), Prometheus (metrics), and Grafana (dashboards).
+- Comprehensive observability with OpenTelemetry, Jaeger (tracing), Prometheus (metrics), Loki (logs) and Grafana (dashboards).
 - Easy to run and deploy with Docker.
 
 ## System Design
@@ -143,10 +152,11 @@ The primary game interaction happens over a WebSocket connection established at 
 - `{ "type": "rematch_request" }`: Informs the player that the opponent wants a rematch.
 - `{ "type": "rematch_successful" }`: Confirms that a rematch is starting.
 
-## Monitoring & Observability
+## Monitoring and Observability
 
 The `docker-compose.yml` file sets up a complete monitoring stack.
 
 - **Jaeger**: For distributed tracing. View traces at `http://localhost:16686`.
 - **Prometheus**: For metrics collection. Explore metrics at `http://localhost:9090`. The Go application and the OTel collector expose metrics endpoints.
 - **Grafana**: For creating dashboards from Prometheus data. Access it at `http://localhost:3000`. A Prometheus data source is pre-configured.
+- **Loki**: For log aggregation. Logs from the Go application are sent to Loki, which can be queried via Grafana.
