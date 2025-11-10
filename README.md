@@ -26,6 +26,7 @@ A real-time, web-based Tic-Tac-Toe game built with Go and WebSocket. It features
 - Support for auto-scaling and hot updates for high availability.
 - Comprehensive observability with OpenTelemetry, Jaeger (tracing), Prometheus (metrics), Loki (logs) and Grafana (dashboards).
 - Easy to run and deploy with Docker.
+- Robust unit testing for core logic and components.
 
 ## System Design
 
