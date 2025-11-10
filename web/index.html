@@ -370,10 +370,17 @@
 						}
 						renderBoard(msg.board);
 						if (msg.winner) {
-							gameMessageElem.textContent = `遊戲結束！贏家是 ${msg.winner}！`;
 							currentTurnDisplayElem.textContent = ''; // Clear turn display
 							isMyTurn = false;
 							rematchButtonsElem.style.display = 'block'; // Show rematch buttons
+							if (msg.winner && msg.winner.toLowerCase() === "draw") {
+								gameMessageElem.textContent = `遊戲結束！平局！`;
+							} else if (msg.winner) {
+								// 可根據玩家名稱做本地化處理
+								gameMessageElem.textContent = `遊戲結束！贏家是 ${msg.winner}！`;
+							} else {
+								gameMessageElem.textContent = `遊戲結束！`;
+							}
 						} else if (msg.isDraw) { // Assuming backend sends isDraw
 							gameMessageElem.textContent = `遊戲結束！平局！`;
 							currentTurnDisplayElem.textContent = ''; // Clear turn display
