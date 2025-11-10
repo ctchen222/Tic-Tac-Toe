@@ -8,7 +8,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/repository"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -76,6 +76,7 @@ func (r *Room) Start(unregisterPlayer chan<- *player.Player) {
 
 // run is the main game loop for the room.
 func (r *Room) run() {
+	ctx := context.Background()
 	moveTimer := time.NewTimer(r.moveTimeout)
 	pingTicker := time.NewTicker(heartbeatInterval)
 	cleanupTicker := time.NewTicker(reconnectionGracePeriod)
@@ -87,10 +88,9 @@ func (r *Room) run() {
 	}()
 
 	for {
-		ctx := context.Background()
 		gameState, err := r.gameRepo.FindByID(ctx, r.ID)
 		if err != nil {
-			log.Printf("run loop cannot get game state for room %s: %v. Closing room.", r.ID, err)
+			slog.ErrorContext(ctx, "run loop cannot get game state, closing room", "room.id", r.ID, "error", err)
 			if len(r.Players) > 0 {
 				r.unregister <- r.Players[0]
 			}
@@ -126,7 +126,7 @@ func (r *Room) run() {
 
 		select {
 		case <-r.Done:
-			log.Printf("Room %s run goroutine stopping.", r.ID)
+			slog.Info("Room run goroutine stopping.", "room.id", r.ID)
 			return
 
 		case move := <-r.incomingMoves:
@@ -147,11 +147,11 @@ func (r *Room) run() {
 				continue
 			}
 
-			log.Printf("Player %s timed out.", currentPlayer.ID)
+			slog.Info("Player timed out", "player.id", currentPlayer.ID, "room.id", r.ID)
 			row, col := r.moveCalculator.CalculateNextMove(game.BoardArrayToSlice(gameState.Board), gameState.CurrentTurn, "medium")
 
 			if row != -1 && col != -1 {
-				log.Printf("Proxy move for player %s: row %d, col %d", currentPlayer.ID, row, col)
+				slog.Info("Proxy move for player", "player.id", currentPlayer.ID, "row", row, "col", col)
 				moveMsg := proto.ClientToServerMessage{Type: "move", Position: []int{row, col}}
 				moveBytes, _ := json.Marshal(moveMsg)
 				r.HandleMessage(currentPlayer, moveBytes)
@@ -161,7 +161,7 @@ func (r *Room) run() {
 			for _, p := range r.Players {
 				if p.Status == player.StatusConnected {
 					if err := p.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-						log.Printf("Failed to send ping to player %s, assuming disconnect: %v", p.ID, err)
+						slog.Warn("Failed to send ping to player, assuming disconnect", "player.id", p.ID, "error", err)
 					}
 				}
 			}
@@ -170,7 +170,7 @@ func (r *Room) run() {
 			r.mu.Lock()
 			for _, p := range r.Players {
 				if p.Status == player.StatusDisconnected && time.Since(p.LastSeen) > reconnectionGracePeriod {
-					log.Printf("Player %s exceeded reconnection grace period. Removing from room %s.", p.ID, r.ID)
+					slog.Info("Player exceeded reconnection grace period. Removing from room.", "player.id", p.ID, "room.id", r.ID)
 					r.unregister <- p
 				}
 			}

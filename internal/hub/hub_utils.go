@@ -7,7 +7,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/room"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
-	"log"
+	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -21,11 +21,11 @@ func (h *Hub) sendInitialRoomState(ctx context.Context, room *room.Room, localPl
 	))
 	defer span.End()
 
-	log.Printf("Sending assignments/state for room %s to %d local players.", room.ID, len(localPlayers))
+	slog.InfoContext(ctx, "Sending initial room state", "room.id", room.ID, "local_players.count", len(localPlayers))
 
 	initialGameState, err := h.gameRepo.FindByID(ctx, room.ID)
 	if err != nil {
-		log.Printf("Could not get initial game state for room %s: %v", room.ID, err)
+		slog.ErrorContext(ctx, "Could not get initial game state", "room.id", room.ID, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Could not get initial game state")
 		return
@@ -44,7 +44,7 @@ func (h *Hub) sendInitialRoomState(ctx context.Context, room *room.Room, localPl
 		data, _ := json.Marshal(assignmentMessage)
 		if p.Conn != nil {
 			if err := p.Conn.WriteMessage(1, data); err != nil {
-				log.Printf("Error sending assignment to player %s: %v", p.ID, err)
+				slog.ErrorContext(ctx, "Error sending assignment to player", "player.id", p.ID, "error", err)
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "Error sending assignment to player")
 			}

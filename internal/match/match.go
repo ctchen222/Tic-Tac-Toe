@@ -3,7 +3,7 @@ package match
 import (
 	"ctchen222/Tic-Tac-Toe/internal/player"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -39,7 +39,7 @@ func (m *MatchManager) Run() {
 			for i, p := range m.waitingPlayers {
 				if p.ID == playerID {
 					m.waitingPlayers = append(m.waitingPlayers[:i], m.waitingPlayers[i+1:]...)
-					log.Printf("Matchmaker: Player %s removed from waiting list.", playerID)
+					slog.Info("Matchmaker: Player removed from waiting list", "player.id", playerID)
 					break
 				}
 			}
@@ -70,7 +70,7 @@ func (m *MatchManager) tryMatchPlayers() {
 		m.waitingPlayers = m.waitingPlayers[2:]
 
 		m.matchedPairChan <- [2]*player.Player{player1, player2}
-		log.Printf("Matchmaker: Matched players %s and %s", player1.ID, player2.ID)
+		slog.Info("Matchmaker: Matched players", "player1.id", player1.ID, "player2.id", player2.ID)
 	}
 }
 

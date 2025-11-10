@@ -7,7 +7,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
 	"io"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -51,7 +51,7 @@ func (bc *BotConnection) WriteMessage(messageType int, data []byte) error {
 			return err
 		}
 		bc.mark = msg.Mark
-		log.Printf("Bot %s has been assigned mark: '%s'", bc.playerID, bc.mark)
+		slog.Info("Bot has been assigned mark", "bot.id", bc.playerID, "mark", bc.mark)
 
 	case "update":
 		var msg proto.ServerToClientMessage
@@ -61,13 +61,13 @@ func (bc *BotConnection) WriteMessage(messageType int, data []byte) error {
 
 		// The bot only acts if it has a mark, it's its turn, and there is no winner
 		if bc.mark != "" && msg.Next == bc.mark && msg.Winner == "" {
-			log.Printf("Bot %s (as %s) is thinking...", bc.playerID, bc.mark)
+			slog.Info("Bot is thinking...", "bot.id", bc.playerID, "mark", bc.mark)
 			time.Sleep(1 * time.Second) // Simulate thinking time
 
 			row, col := CalculateNextMove(msg.Board, bc.mark, bc.difficulty)
 
 			if row != -1 {
-				log.Printf("Bot calculated move: (%d, %d). Injecting into room.", row, col)
+				slog.Info("Bot calculated move. Injecting into room.", "bot.id", bc.playerID, "row", row, "col", col)
 				move := proto.ClientToServerMessage{
 					Type:     "move",
 					Position: []int{row, col},
@@ -82,7 +82,7 @@ func (bc *BotConnection) WriteMessage(messageType int, data []byte) error {
 				bc.incomingMoves <- moveToSend
 
 			} else {
-				log.Printf("Bot calculated no valid move.")
+				slog.Warn("Bot calculated no valid move.", "bot.id", bc.playerID)
 			}
 		}
 	}

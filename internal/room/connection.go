@@ -7,7 +7,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
-	"log"
+	"log/slog"
 
 	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel/attribute"
@@ -17,7 +17,8 @@ import (
 
 // Broadcast sends a message to all connected players in the room.
 func (r *Room) Broadcast(message *proto.ServerToClientMessage) {
-	_, span := tracer.Start(context.Background(), "room.Broadcast", trace.WithAttributes(
+	ctx := context.Background()
+	_, span := tracer.Start(ctx, "room.Broadcast", trace.WithAttributes(
 		attribute.String("room.id", r.ID),
 		attribute.String("message.type", message.Type),
 	))
@@ -25,7 +26,7 @@ func (r *Room) Broadcast(message *proto.ServerToClientMessage) {
 
 	data, err := json.Marshal(message)
 	if err != nil {
-		log.Printf("error marshalling message: %v", err)
+		slog.ErrorContext(ctx, "error marshalling message", "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Error marshalling message")
 		return
@@ -34,7 +35,7 @@ func (r *Room) Broadcast(message *proto.ServerToClientMessage) {
 	for _, p := range r.Players {
 		if p.Status == player.StatusConnected {
 			if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				log.Printf("error writing message to player %s: %v", p.ID, err)
+				slog.ErrorContext(ctx, "error writing message to player", "player.id", p.ID, "error", err)
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "Error writing message to player")
 			}
@@ -59,7 +60,7 @@ func (r *Room) ReadPump(p *player.Player) {
 		defer disconnectSpan.End()
 
 		if err := r.playerRepo.UpdateConnectionStatus(disconnectCtx, p.ID, player.StatusDisconnected); err != nil {
-			log.Printf("Failed to set player %s status to disconnected: %v", p.ID, err)
+			slog.ErrorContext(disconnectCtx, "Failed to set player status to disconnected", "player.id", p.ID, "error", err)
 			disconnectSpan.RecordError(err)
 			disconnectSpan.SetStatus(codes.Error, "Failed to set player status to disconnected")
 		}
@@ -70,17 +71,17 @@ func (r *Room) ReadPump(p *player.Player) {
 		})
 		event, _ := json.Marshal(events.Event{Type: "player_disconnected", Payload: payload})
 		if err := r.rdb.Publish(disconnectCtx, events.EventsChannel, event).Err(); err != nil {
-			log.Printf("Failed to publish player_disconnected event for player %s: %v", p.ID, err)
+			slog.ErrorContext(disconnectCtx, "Failed to publish player_disconnected event", "player.id", p.ID, "error", err)
 			disconnectSpan.RecordError(err)
 			disconnectSpan.SetStatus(codes.Error, "Failed to publish player_disconnected event")
 		}
-		log.Printf("Player %s disconnected. Updated status and published event.", p.ID)
+		slog.InfoContext(disconnectCtx, "Player disconnected. Updated status and published event.", "player.id", p.ID)
 	}()
 
 	for {
 		_, msg, err := p.Conn.ReadMessage()
 		if err != nil {
-			log.Printf("Player %s connection error in room %s: %v", p.ID, r.ID, err)
+			slog.WarnContext(ctx, "Player connection error", "player.id", p.ID, "room.id", r.ID, "error", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "Player connection error")
 			return

@@ -18,6 +18,10 @@ exporters:
     verbosity: detailed
   prometheus:
     endpoint: 0.0.0.0:8889
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+    tls:
+      insecure: true
 
 service:
   pipelines:
@@ -32,4 +36,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [loki, debug]

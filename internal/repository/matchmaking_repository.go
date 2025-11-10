@@ -2,7 +2,7 @@ package repository
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -48,20 +48,19 @@ func (r *redisMatchmakingRepository) GetPlayersFromQueue(ctx context.Context) (s
 		return "", "", err
 	}
 	player1ID := player1Res[1]
-	log.Printf("Matcher found player 1: %s, waiting for player 2...", player1ID)
+	slog.InfoContext(ctx, "Matcher found player 1, waiting for player 2...", "player.id", player1ID)
 
 	// Block until a second player is available
 	player2Res, err := r.rdb.BLPop(ctx, 0, matchmakingQueueKey).Result()
 	if err != nil {
-		// If we fail to get a second player, re-queue the first one.
-		log.Printf("Matcher error on player 2, re-queuing player 1: %v", err)
+		slog.ErrorContext(ctx, "Matcher error on player 2, re-queuing player 1", "player.id", player1ID, "error", err)
 		if requeueErr := r.AddToQueue(ctx, player1ID); requeueErr != nil {
-			log.Printf("FATAL: Failed to re-queue player %s: %v", player1ID, requeueErr)
+			slog.ErrorContext(ctx, "FATAL: Failed to re-queue player", "player.id", player1ID, "error", requeueErr)
 		}
 		return "", "", err
 	}
 	player2ID := player2Res[1]
-	log.Printf("Matcher found player 2: %s. Creating match...", player2ID)
+	slog.InfoContext(ctx, "Matcher found player 2. Creating match...", "player.id", player2ID)
 
 	return player1ID, player2ID, nil
 }

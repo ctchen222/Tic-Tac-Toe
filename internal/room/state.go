@@ -5,7 +5,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/events"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
-	"log"
+	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -21,7 +21,7 @@ func (r *Room) resetGameForRematch(ctx context.Context) {
 
 	oldGameState, err := r.gameRepo.FindByID(ctx, r.ID)
 	if err != nil {
-		log.Printf("failed to get old game state before rematch reset: %v", err)
+		slog.ErrorContext(ctx, "failed to get old game state before rematch reset", "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to get old game state before rematch reset")
 		return
@@ -29,19 +29,19 @@ func (r *Room) resetGameForRematch(ctx context.Context) {
 
 	err = r.gameRepo.Create(ctx, r.ID, oldGameState.PlayerOID, oldGameState.PlayerXID)
 	if err != nil {
-		log.Printf("failed to reset game for rematch in redis: %v", err)
+		slog.ErrorContext(ctx, "failed to reset game for rematch in redis", "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to reset game for rematch in redis")
 		return
 	}
 
 	if err := r.gameRepo.ClearVotes(ctx, r.ID, oldGameState.PlayerXID, oldGameState.PlayerOID); err != nil {
-		log.Printf("failed to clean up votes for room %s: %v", r.ID, err)
+		slog.ErrorContext(ctx, "failed to clean up votes for room", "room.id", r.ID, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to clean up votes for room")
 	}
 
-	log.Printf("Room %s game reset in Redis for rematch and votes cleaned.", r.ID)
+	slog.InfoContext(ctx, "Room game reset in Redis for rematch and votes cleaned", "room.id", r.ID)
 
 	// Publish a global event to notify hubs to resend assignments and state
 	payload, _ := json.Marshal(events.RematchSuccessfulPayload{
@@ -49,7 +49,7 @@ func (r *Room) resetGameForRematch(ctx context.Context) {
 	})
 	event, _ := json.Marshal(events.Event{Type: "rematch_successful", Payload: payload})
 	if err := r.rdb.Publish(ctx, events.EventsChannel, event).Err(); err != nil {
-		log.Printf("failed to publish rematch_successful event for room %s: %v", r.ID, err)
+		slog.ErrorContext(ctx, "failed to publish rematch_successful event", "room.id", r.ID, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to publish rematch_successful event")
 	}

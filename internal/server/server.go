@@ -5,7 +5,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/hub"
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
 	"ctchen222/Tic-Tac-Toe/internal/player"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -76,7 +76,7 @@ func (s *Server) handleWebSocket(c *gin.Context) {
 
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("Failed to upgrade connection: %v", err)
+		slog.ErrorContext(ctx, "Failed to upgrade connection", "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to upgrade connection")
 		return

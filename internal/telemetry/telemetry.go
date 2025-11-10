@@ -7,19 +7,21 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.25.0"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// InitOtel initializes an OpenTelemetry SDK with configurations for both traces and metrics.
+// InitOtel initializes an OpenTelemetry SDK with configurations for traces, metrics, and logs.
 func InitOtel() (func(context.Context) error, error) {
 	ctx := context.Background()
 
@@ -38,10 +40,8 @@ func InitOtel() (func(context.Context) error, error) {
 	}
 
 	// --- Create shared resource ---
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
 			semconv.ServiceName("tic-tac-toe"),
 			semconv.ServiceVersion("v0.1.0"),
 		),
@@ -51,18 +51,12 @@ func InitOtel() (func(context.Context) error, error) {
 	}
 
 	// --- Setup Traces ---
-	stdoutTraceExporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout trace exporter: %w", err)
-	}
-
 	otlpTraceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OTLP trace exporter: %w", err)
 	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(stdoutTraceExporter),
 		sdktrace.WithBatcher(otlpTraceExporter),
 		sdktrace.WithResource(res),
 	)
@@ -80,6 +74,18 @@ func InitOtel() (func(context.Context) error, error) {
 	)
 	otel.SetMeterProvider(mp)
 
+	// --- Setup Logs ---
+	otlpLogExporter, err := otlploggrpc.New(ctx, otlploggrpc.WithGRPCConn(conn))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OTLP log exporter: %w", err)
+	}
+
+	lp := log.NewLoggerProvider(
+		log.WithProcessor(log.NewBatchProcessor(otlpLogExporter)),
+		log.WithResource(res),
+	)
+	global.SetLoggerProvider(lp)
+
 	// --- Set Propagators ---
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
@@ -94,6 +100,9 @@ func InitOtel() (func(context.Context) error, error) {
 		}
 		if err := mp.Shutdown(ctx); err != nil {
 			return fmt.Errorf("failed to shutdown MeterProvider: %w", err)
+		}
+		if err := lp.Shutdown(ctx); err != nil {
+			return fmt.Errorf("failed to shutdown LoggerProvider: %w", err)
 		}
 
 		// Close the gRPC connection

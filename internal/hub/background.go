@@ -8,7 +8,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time" // Added for time.Sleep
 
 	"github.com/google/uuid"
@@ -24,7 +24,7 @@ func (h *Hub) runRoomUpdateSubscriber(ctx context.Context, room *room.Room) {
 	defer span.End()
 
 	roomChannel := fmt.Sprintf("channel:room:%s", room.ID)
-	log.Printf("Starting subscriber for room %s on channel %s", room.ID, roomChannel)
+	slog.InfoContext(ctx, "Starting room subscriber", "room.id", room.ID, "channel", roomChannel)
 	pubsub := h.rdb.Subscribe(ctx, roomChannel)
 	defer pubsub.Close()
 
@@ -36,10 +36,10 @@ func (h *Hub) runRoomUpdateSubscriber(ctx context.Context, room *room.Room) {
 		))
 		defer updateSpan.End()
 
-		log.Printf("Received update for room %s, payload: %s", room.ID, msg.Payload)
+		slog.InfoContext(updateCtx, "Received room update", "room.id", room.ID, "payload", msg.Payload)
 		gameState, err := h.gameRepo.FindByID(updateCtx, room.ID)
 		if err != nil {
-			log.Printf("Room subscriber for %s could not get game state: %v", room.ID, err)
+			slog.ErrorContext(updateCtx, "Room subscriber could not get game state", "room.id", room.ID, "error", err)
 			updateSpan.RecordError(err)
 			updateSpan.SetStatus(codes.Error, "Could not get game state")
 			continue
@@ -52,18 +52,18 @@ func (h *Hub) runRoomUpdateSubscriber(ctx context.Context, room *room.Room) {
 		}
 		room.Broadcast(updateMsg)
 	}
-	log.Printf("Stopping subscriber for room %s", room.ID)
+	slog.InfoContext(ctx, "Stopping room subscriber", "room.id", room.ID)
 }
 
 func (h *Hub) runMatcher(ctx context.Context) {
-	log.Println("Redis-based matcher started")
+	slog.InfoContext(ctx, "Redis-based matcher started")
 	for {
 		//TODO: refactor span error handling
 		matchCtx, matchSpan := tracer.Start(ctx, "hub.runMatcher.matchAttempt")
 
 		player1ID, player2ID, err := h.matchmakingRepo.GetPlayersFromQueue(matchCtx)
 		if err != nil {
-			log.Printf("Error getting players from queue: %v", err)
+			slog.ErrorContext(matchCtx, "Error getting players from queue", "error", err)
 			matchSpan.RecordError(err)
 			matchSpan.SetStatus(codes.Error, "Error getting players from queue")
 			matchSpan.End()
@@ -76,17 +76,17 @@ func (h *Hub) runMatcher(ctx context.Context) {
 		matchSpan.SetAttributes(attribute.String("room.id", roomID))
 
 		if err := h.gameRepo.Create(matchCtx, roomID, player1ID, player2ID); err != nil {
-			log.Printf("Failed to create new game in Redis for room %s: %v", roomID, err)
-			log.Println("Re-queuing players...")
+			slog.ErrorContext(matchCtx, "Failed to create new game in Redis", "room.id", roomID, "error", err)
+			slog.InfoContext(matchCtx, "Re-queuing players")
 			matchSpan.RecordError(err)
 			matchSpan.SetStatus(codes.Error, "Failed to create game in Redis")
 			if err := h.matchmakingRepo.AddToQueue(matchCtx, player1ID); err != nil {
-				log.Printf("FATAL: Failed to re-queue player %s: %v", player1ID, err)
+				slog.ErrorContext(matchCtx, "FATAL: Failed to re-queue player", "player.id", player1ID, "error", err)
 				matchSpan.RecordError(err)
 				matchSpan.SetStatus(codes.Error, "FATAL: Failed to re-queue player1")
 			}
 			if err := h.matchmakingRepo.AddToQueue(matchCtx, player2ID); err != nil {
-				log.Printf("FATAL: Failed to re-queue player %s: %v", player2ID, err)
+				slog.ErrorContext(matchCtx, "FATAL: Failed to re-queue player", "player.id", player2ID, "error", err)
 				matchSpan.RecordError(err)
 				matchSpan.SetStatus(codes.Error, "FATAL: Failed to re-queue player2")
 			}
@@ -95,19 +95,19 @@ func (h *Hub) runMatcher(ctx context.Context) {
 		}
 
 		if err := h.playerRepo.UpdateForMatch(matchCtx, player1ID, roomID); err != nil {
-			log.Printf("Failed to update player %s state for match: %v", player1ID, err)
+			slog.ErrorContext(matchCtx, "Failed to update player state for match", "player.id", player1ID, "error", err)
 			matchSpan.RecordError(err)
 			matchSpan.SetStatus(codes.Error, "Failed to update player1 for match")
 		}
 		if err := h.playerRepo.UpdateForMatch(matchCtx, player2ID, roomID); err != nil {
-			log.Printf("Failed to update player %s state for match: %v", player2ID, err)
+			slog.ErrorContext(matchCtx, "Failed to update player state for match", "player.id", player2ID, "error", err)
 			matchSpan.RecordError(err)
 			matchSpan.SetStatus(codes.Error, "Failed to update player2 for match")
 		}
 
 		payload, err := json.Marshal(events.MatchMadePayload{RoomID: roomID, PlayerIDs: []string{player1ID, player2ID}})
 		if err != nil {
-			log.Printf("Failed to marshal match_made payload: %v", err)
+			slog.ErrorContext(matchCtx, "Failed to marshal match_made payload", "error", err)
 			matchSpan.RecordError(err)
 			matchSpan.SetStatus(codes.Error, "Failed to marshal match_made payload")
 			matchSpan.End()
@@ -115,7 +115,7 @@ func (h *Hub) runMatcher(ctx context.Context) {
 		}
 		event, err := json.Marshal(events.Event{Type: "match_made", Payload: payload})
 		if err != nil {
-			log.Printf("Failed to marshal event: %v", err)
+			slog.ErrorContext(matchCtx, "Failed to marshal event", "error", err)
 			matchSpan.RecordError(err)
 			matchSpan.SetStatus(codes.Error, "Failed to marshal event")
 			matchSpan.End()
@@ -123,14 +123,14 @@ func (h *Hub) runMatcher(ctx context.Context) {
 		}
 
 		if err := h.rdb.Publish(matchCtx, events.EventsChannel, event).Err(); err != nil {
-			log.Printf("Failed to publish match_made event: %v", err)
+			slog.ErrorContext(matchCtx, "Failed to publish match_made event", "error", err)
 			matchSpan.RecordError(err)
 			matchSpan.SetStatus(codes.Error, "Failed to publish match_made event")
 			matchSpan.End()
 			continue
 		}
 
-		log.Printf("Room %s created for players %s and %s. Event published.", roomID, player1ID, player2ID)
+		slog.InfoContext(matchCtx, "Room created and event published", "room.id", roomID, "player1.id", player1ID, "player2.id", player2ID)
 		matchSpan.End()
 	}
 }

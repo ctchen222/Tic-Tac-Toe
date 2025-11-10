@@ -8,18 +8,15 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/room"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
-	"log"
+	"log/slog"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
-var tracer = otel.Tracer("hub.event_handler")
-
 func (h *Hub) runEventSubscriber(ctx context.Context) {
-	log.Println("Event subscriber started for channel:", events.EventsChannel)
+	slog.InfoContext(ctx, "Event subscriber started", "channel", events.EventsChannel)
 	pubsub := h.rdb.Subscribe(ctx, events.EventsChannel)
 	defer pubsub.Close()
 
@@ -43,7 +40,7 @@ func (h *Hub) runEventSubscriber(ctx context.Context) {
 					})
 				}
 			} else {
-				log.Printf("Could not unmarshal global event: %v", err)
+				slog.ErrorContext(eventCtx, "Could not unmarshal global event", "error", err)
 				eventSpan.RecordError(err)
 				eventSpan.SetStatus(codes.Error, "Could not unmarshal global event")
 			}
@@ -55,7 +52,7 @@ func (h *Hub) runEventSubscriber(ctx context.Context) {
 		case "match_made":
 			var payload events.MatchMadePayload
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
-				log.Printf("Could not unmarshal match_made payload: %v", err)
+				slog.ErrorContext(eventCtx, "Could not unmarshal match_made payload", "error", err)
 				eventSpan.RecordError(err)
 				eventSpan.SetStatus(codes.Error, "Could not unmarshal match_made payload")
 				continue
@@ -65,7 +62,7 @@ func (h *Hub) runEventSubscriber(ctx context.Context) {
 		case "player_disconnected":
 			var payload events.PlayerDisconnectedPayload
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
-				log.Printf("Could not unmarshal player_disconnected payload: %v", err)
+				slog.ErrorContext(eventCtx, "Could not unmarshal player_disconnected payload", "error", err)
 				eventSpan.RecordError(err)
 				eventSpan.SetStatus(codes.Error, "Could not unmarshal player_disconnected payload")
 				continue
@@ -75,7 +72,7 @@ func (h *Hub) runEventSubscriber(ctx context.Context) {
 		case "player_reconnected":
 			var payload events.PlayerReconnectedPayload
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
-				log.Printf("Could not unmarshal player_reconnected payload: %v", err)
+				slog.ErrorContext(eventCtx, "Could not unmarshal player_reconnected payload", "error", err)
 				eventSpan.RecordError(err)
 				eventSpan.SetStatus(codes.Error, "Could not unmarshal player_reconnected payload")
 				continue
@@ -85,7 +82,7 @@ func (h *Hub) runEventSubscriber(ctx context.Context) {
 		case "rematch_requested":
 			var payload events.RematchRequestedPayload
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
-				log.Printf("Could not unmarshal rematch_requested payload: %v", err)
+				slog.ErrorContext(eventCtx, "Could not unmarshal rematch_requested payload", "error", err)
 				eventSpan.RecordError(err)
 				eventSpan.SetStatus(codes.Error, "Could not unmarshal rematch_requested payload")
 				continue
@@ -95,7 +92,7 @@ func (h *Hub) runEventSubscriber(ctx context.Context) {
 		case "rematch_successful":
 			var payload events.RematchSuccessfulPayload
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
-				log.Printf("Could not unmarshal rematch_successful payload: %v", err)
+				slog.ErrorContext(eventCtx, "Could not unmarshal rematch_successful payload", "error", err)
 				eventSpan.RecordError(err)
 				eventSpan.SetStatus(codes.Error, "Could not unmarshal rematch_successful payload")
 				continue
@@ -112,7 +109,7 @@ func (h *Hub) handleMatchMade(ctx context.Context, payload *events.MatchMadePayl
 	))
 	defer span.End()
 
-	log.Printf("Received match_made event for room %s", payload.RoomID)
+	slog.InfoContext(ctx, "Received match_made event", "room.id", payload.RoomID)
 
 	var localPlayersInRoom []*player.Player
 	for _, playerID := range payload.PlayerIDs {
@@ -122,7 +119,7 @@ func (h *Hub) handleMatchMade(ctx context.Context, payload *events.MatchMadePayl
 	}
 
 	if len(localPlayersInRoom) > 0 {
-		log.Printf("Found %d local player(s) for room %s. Creating local room handler.", len(localPlayersInRoom), payload.RoomID)
+		slog.InfoContext(ctx, "Found local players for room, creating handler", "local_players.count", len(localPlayersInRoom), "room.id", payload.RoomID)
 		h.createAndStartRoom(ctx, payload.RoomID, localPlayersInRoom)
 	}
 }
@@ -134,7 +131,7 @@ func (h *Hub) handlePlayerDisconnected(ctx context.Context, payload *events.Play
 	))
 	defer span.End()
 
-	log.Printf("Received player_disconnected event for player %s in room %s", payload.PlayerID, payload.RoomID)
+	slog.InfoContext(ctx, "Received player_disconnected event", "player.id", payload.PlayerID, "room.id", payload.RoomID)
 
 	if room, ok := h.localRooms[payload.RoomID]; ok {
 		room.HandleOpponentDisconnected()
@@ -148,7 +145,7 @@ func (h *Hub) handlePlayerReconnected(ctx context.Context, payload *events.Playe
 	))
 	defer span.End()
 
-	log.Printf("Received player_reconnected event for player %s in room %s", payload.PlayerID, payload.RoomID)
+	slog.InfoContext(ctx, "Received player_reconnected event", "player.id", payload.PlayerID, "room.id", payload.RoomID)
 
 	if room, ok := h.localRooms[payload.RoomID]; ok {
 		room.HandleOpponentReconnected()
@@ -161,7 +158,7 @@ func (h *Hub) handleRematchSuccessful(ctx context.Context, payload *events.Remat
 	))
 	defer span.End()
 
-	log.Printf("Received rematch_successful event for room %s", payload.RoomID)
+	slog.InfoContext(ctx, "Received rematch_successful event", "room.id", payload.RoomID)
 
 	if room, ok := h.localRooms[payload.RoomID]; ok {
 		// Resend assignments and initial state to all players in the room
@@ -176,7 +173,7 @@ func (h *Hub) handleRematchRequested(ctx context.Context, payload *events.Rematc
 	))
 	defer span.End()
 
-	log.Printf("Received rematch_requested event from player %s in room %s", payload.PlayerID, payload.RoomID)
+	slog.InfoContext(ctx, "Received rematch_requested event", "player.id", payload.PlayerID, "room.id", payload.RoomID)
 
 	if room, ok := h.localRooms[payload.RoomID]; ok {
 		for _, p := range room.Players {
@@ -185,7 +182,7 @@ func (h *Hub) handleRematchRequested(ctx context.Context, payload *events.Rematc
 				data, _ := json.Marshal(msg)
 				if p.Conn != nil {
 					if err := p.Conn.WriteMessage(1, data); err != nil {
-						log.Printf("Error sending rematch_requested to player %s: %v", p.ID, err)
+						slog.ErrorContext(ctx, "Error sending rematch_requested to player", "player.id", p.ID, "error", err)
 						span.RecordError(err)
 						span.SetStatus(codes.Error, "Error sending rematch_requested")
 					}

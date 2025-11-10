@@ -6,7 +6,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
 	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/internal/room"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,9 +25,9 @@ func (h *Hub) handleReconnectionRegistration(ctx context.Context, p *player.Play
 	if existingRoom, ok := h.localRooms[roomID]; ok {
 		existingRoom.AddPlayer(p)
 		go existingRoom.ReadPump(p)
-		log.Printf("Reconnected player %s added back to existing local room %s", p.ID, roomID)
+		slog.InfoContext(ctx, "Reconnected player added back to existing local room", "player.id", p.ID, "room.id", roomID)
 	} else {
-		log.Printf("Creating new local room handler for reconnected player %s in room %s", p.ID, roomID)
+		slog.InfoContext(ctx, "Creating new local room handler for reconnected player", "player.id", p.ID, "room.id", roomID)
 		moveCalculator := &bot.BotMoveCalculator{}
 		newRoom := room.NewRoom(roomID, h.rdb, h.gameRepo, h.playerRepo, moveCalculator, moveTimeout)
 		newRoom.AddPlayer(p)
@@ -46,7 +46,7 @@ func (h *Hub) registerBotGame(ctx context.Context, req *types.RegistrationReques
 	))
 	defer span.End()
 
-	log.Printf("Creating bot match for player %s with difficulty %s", req.Player.ID, req.Difficulty)
+	slog.InfoContext(ctx, "Creating bot match", "player.id", req.Player.ID, "difficulty", req.Difficulty)
 
 	var botGameTimeout time.Duration
 	switch req.Difficulty {
@@ -70,19 +70,19 @@ func (h *Hub) registerBotGame(ctx context.Context, req *types.RegistrationReques
 	player2.Conn = botConn
 
 	if err := h.gameRepo.Create(ctx, roomID, player1.ID, player2.ID); err != nil {
-		log.Printf("Failed to create new bot game in Redis for room %s: %v", roomID, err)
+		slog.ErrorContext(ctx, "Failed to create new bot game in Redis", "room.id", roomID, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to create bot game in Redis")
 		return
 	}
-	log.Printf("Bot game state created in Redis for room %s", roomID)
+	slog.InfoContext(ctx, "Bot game state created in Redis", "room.id", roomID)
 
 	newRoom.AddPlayer(player1)
 	newRoom.AddPlayer(player2)
 	h.localRooms[roomID] = newRoom
 	go newRoom.Start(h.unregister)
 	go h.runRoomUpdateSubscriber(ctx, newRoom)
-	log.Printf("Local room handler created for bot match %s", roomID)
+	slog.InfoContext(ctx, "Local room handler created for bot match", "room.id", roomID)
 
 	h.sendInitialRoomState(ctx, newRoom, newRoom.Players)
 }
@@ -93,10 +93,10 @@ func (h *Hub) queuePlayerForMatchmaking(ctx context.Context, req *types.Registra
 	))
 	defer span.End()
 
-	log.Printf("Player %s added to matchmaking queue.", req.Player.ID)
+	slog.InfoContext(ctx, "Player added to matchmaking queue", "player.id", req.Player.ID)
 
 	if err := h.matchmakingRepo.AddToQueue(ctx, req.Player.ID); err != nil {
-		log.Printf("Failed to add player %s to queue: %v", req.Player.ID, err)
+		slog.ErrorContext(ctx, "Failed to add player to queue", "player.id", req.Player.ID, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to add player to queue")
 	}

@@ -6,7 +6,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/internal/repository"
 	"ctchen222/Tic-Tac-Toe/internal/room"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -22,8 +22,9 @@ const moveTimeout = 15 * time.Second
 var (
 	activeRoomsCounter metric.Int64UpDownCounter
 	gamesPlayedCounter metric.Int64Counter
-	// tracer             = otel.Tracer("hub")
-	meter = otel.Meter("hub")
+
+	tracer = otel.Tracer("hub")
+	meter  = otel.Meter("hub")
 )
 
 func init() {
@@ -39,7 +40,6 @@ func init() {
 	}
 }
 
-// Hub manages player connections and matchmaking notifications for a single server instance.
 type Hub struct {
 	rdb             *redis.Client
 	gameRepo        repository.GameRepository
@@ -47,7 +47,7 @@ type Hub struct {
 	matchmakingRepo repository.MatchmakingRepository
 	serverID        string
 	localPlayers    map[string]*player.Player
-	localRooms      map[string]*room.Room // room is not imported, but it's used here. Need to add import.
+	localRooms      map[string]*room.Room
 
 	register   chan *types.RegistrationRequest
 	unregister chan *player.Player
@@ -70,7 +70,7 @@ func NewHub(gameRepo repository.GameRepository, playerRepo repository.PlayerRepo
 
 // Run starts the hub.
 func (h *Hub) Run() {
-	log.Printf("Hub starting with Server ID: %s", h.serverID)
+	slog.Info("Hub starting", "server.id", h.serverID)
 
 	go h.runMatcher(context.Background())
 	go h.runEventSubscriber(context.Background())
@@ -84,25 +84,25 @@ func (h *Hub) Run() {
 			))
 
 			hubCtx := context.Background()
-			log.Printf("Received registration request from player %s", req.Player.ID)
+			slog.InfoContext(traceCtx, "Received registration request", "player.id", req.Player.ID)
 
 			h.localPlayers[req.Player.ID] = req.Player
 
 			roomID, status, err := h.playerRepo.FindForReconnection(hubCtx, req.Player.ID)
 			if err != nil && err != redis.Nil {
-				log.Printf("Error finding player %s for reconnection: %v", req.Player.ID, err)
+				slog.ErrorContext(hubCtx, "Error finding player for reconnection", "player.id", req.Player.ID, "error", err)
 				continue
 			}
 
 			// Only handle as a reconnection if the player was in a room AND was disconnected.
 			if roomID != "" && status == player.StatusDisconnected {
-				log.Printf("Registering reconnected player %s to local room %s", req.Player.ID, roomID)
+				slog.InfoContext(hubCtx, "Registering reconnected player", "player.id", req.Player.ID, "room.id", roomID)
 				h.handleReconnectionRegistration(hubCtx, req.Player, roomID)
 				span.End()
 			} else {
 				// All other cases are treated as a new registration.
 				if err := h.playerRepo.SetInitialState(hubCtx, req.Player.ID, h.serverID); err != nil {
-					log.Printf("Failed to set player info in Redis for %s: %v", req.Player.ID, err)
+					slog.ErrorContext(hubCtx, "Failed to set player info in Redis", "player.id", req.Player.ID, "error", err)
 					continue
 				}
 
@@ -117,16 +117,16 @@ func (h *Hub) Run() {
 
 		case p := <-h.unregister:
 			hubCtx := context.Background()
-			log.Printf("Player %s unregistered.", p.ID)
+			slog.InfoContext(hubCtx, "Player unregistered", "player.id", p.ID)
 
 			delete(h.localPlayers, p.ID)
 
 			if err := h.matchmakingRepo.RemoveFromQueue(hubCtx, p.ID); err != nil {
-				log.Printf("Failed to remove player %s from matchmaking queue: %v", p.ID, err)
+				slog.WarnContext(hubCtx, "Failed to remove player from matchmaking queue", "player.id", p.ID, "error", err)
 			}
 
 			if err := h.playerRepo.SetOffline(hubCtx, p.ID); err != nil {
-				log.Printf("Failed to set player %s status to offline: %v", p.ID, err)
+				slog.ErrorContext(hubCtx, "Failed to set player status to offline", "player.id", p.ID, "error", err)
 			}
 		}
 	}
@@ -141,4 +141,3 @@ func (h *Hub) Register() chan<- *types.RegistrationRequest {
 func (h *Hub) Unregister() chan<- *player.Player {
 	return h.unregister
 }
-
