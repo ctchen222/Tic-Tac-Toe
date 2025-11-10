@@ -13,6 +13,7 @@ const (
 	None    PlayerMark = ""
 	PlayerX PlayerMark = "X"
 	PlayerO PlayerMark = "O"
+	DRAW    PlayerMark = "Draw"
 
 	// Game results
 	Draw GameResult = "Draw"
@@ -83,6 +84,11 @@ func CheckWinner(board [3][3]PlayerMark) PlayerMark {
 		return board[0][2]
 	}
 
+	isBoardFull := IsBoardFull(board)
+	if isBoardFull {
+		return DRAW
+	}
+
 	return None
 }
 
@@ -97,3 +103,4 @@ func IsBoardFull(board [3][3]PlayerMark) bool {
 	}
 	return true
 }
+
