@@ -69,6 +69,7 @@ graph TD
             Jaeger[Jaeger]
             Prometheus[Prometheus]
             Grafana[Grafana]
+            Loki[Loki]
             Otel[OTel Collector]
         end
     end
@@ -85,11 +86,13 @@ graph TD
 
     UserAPI -- Stores/Retrieves Data --> SQLite
 
-    Backend -- Sends Traces/Metrics --> Otel
+    Backend -- Sends Traces/Metrics/Logs --> Otel
     Otel -- Forwards Traces --> Jaeger
     Otel -- Exposes Metrics --> Prometheus
+    Otel -- Forwards Logs --> Loki
     Prometheus -- Scrapes --> Otel
     Grafana -- Queries --> Prometheus
+    Grafana -- Queries --> Loki
 ```
 
 ## Getting Started
