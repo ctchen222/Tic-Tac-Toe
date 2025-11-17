@@ -5,17 +5,23 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/game"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 )
 
-// var tracer = otel.Tracer("repository.game")
+const (
+	roomKeyPrefix = "room:"
+	voteKeyPrefix = "vote:"
+	roomExpiry    = time.Minute * 10
+)
 
 // GameRepository defines the interface for game data operations.
 type GameRepository interface {
 	Create(ctx context.Context, roomID, playerXID, playerOID string) error
 	FindByID(ctx context.Context, id string) (*game.GameStateDTO, error)
 	Update(ctx context.Context, id string, mark game.PlayerMark, row, col int) (*game.GameStateDTO, error)
+	Delete(ctx context.Context, id string) error
 	RecordVote(ctx context.Context, roomID, playerID string) error
 	GetVotes(ctx context.Context, roomID string) (map[string]string, error)
 	ClearVotes(ctx context.Context, roomID, playerXID, playerOID string) error
@@ -41,14 +47,20 @@ func (r *redisGameRepository) Create(ctx context.Context, roomID, playerXID, pla
 		return fmt.Errorf("failed to marshal initial board: %w", err)
 	}
 
+	playerXKey := PlayerKeyPrefix + playerXID
+	playerOIDKey := PlayerKeyPrefix + playerOID
+
 	pipe := r.rdb.Pipeline()
-	roomKey := fmt.Sprintf("room:%s", roomID)
+	roomKey := roomKeyPrefix + roomID
 	pipe.HSet(ctx, roomKey, game.FieldBoard, boardJSON)
 	pipe.HSet(ctx, roomKey, game.FieldPlayerX, playerXID)
 	pipe.HSet(ctx, roomKey, game.FieldPlayerO, playerOID)
 	pipe.HSet(ctx, roomKey, game.FieldNextTurn, string(game.RandomlyChooseFirstPlayer()))
 	pipe.HSet(ctx, roomKey, game.FieldWinner, "")
 	pipe.HSet(ctx, roomKey, game.FieldStatus, "in_progress")
+	pipe.HSet(ctx, playerXKey, "status", PlayerInGame)
+	pipe.HSet(ctx, playerOIDKey, "status", PlayerInGame)
+	pipe.Expire(ctx, roomKey, roomExpiry)
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
@@ -62,7 +74,7 @@ func (r *redisGameRepository) FindByID(ctx context.Context, id string) (*game.Ga
 	ctx, span := tracer.Start(ctx, "GameRepository.FindByID")
 	defer span.End()
 
-	roomKey := fmt.Sprintf("room:%s", id)
+	roomKey := roomKeyPrefix + id
 	data, err := r.rdb.HGetAll(ctx, roomKey).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get game state from redis: %w", err)
@@ -93,7 +105,7 @@ func (r *redisGameRepository) Update(ctx context.Context, id string, mark game.P
 	ctx, span := tracer.Start(ctx, "GameRepository.Update")
 	defer span.End()
 
-	roomKey := fmt.Sprintf("room:%s", id)
+	roomKey := roomKeyPrefix + id
 
 	txf := func(tx *redis.Tx) error {
 		data, err := tx.HGetAll(ctx, roomKey).Result()
@@ -148,13 +160,22 @@ func (r *redisGameRepository) Update(ctx context.Context, id string, mark game.P
 	return r.FindByID(ctx, id)
 }
 
+// Delete removes the game state from Redis.
+func (r *redisGameRepository) Delete(ctx context.Context, id string) error {
+	ctx, span := tracer.Start(ctx, "GameRepository.Delete")
+	defer span.End()
+
+	roomKey := roomKeyPrefix + id
+	return r.rdb.Del(ctx, roomKey).Err()
+}
+
 // RecordVote records a player's vote for a rematch.
 func (r *redisGameRepository) RecordVote(ctx context.Context, roomID, playerID string) error {
 	ctx, span := tracer.Start(ctx, "GameRepository.RecordVote")
 	defer span.End()
 
-	roomKey := fmt.Sprintf("room:%s", roomID)
-	voteKey := fmt.Sprintf("vote:%s", playerID)
+	roomKey := roomKeyPrefix + roomID
+	voteKey := voteKeyPrefix + playerID
 	return r.rdb.HSet(ctx, roomKey, voteKey, "true").Err()
 }
 
@@ -163,7 +184,7 @@ func (r *redisGameRepository) GetVotes(ctx context.Context, roomID string) (map[
 	ctx, span := tracer.Start(ctx, "GameRepository.GetVotes")
 	defer span.End()
 
-	roomKey := fmt.Sprintf("room:%s", roomID)
+	roomKey := roomKeyPrefix + roomID
 	return r.rdb.HGetAll(ctx, roomKey).Result()
 }
 
@@ -172,9 +193,8 @@ func (r *redisGameRepository) ClearVotes(ctx context.Context, roomID, playerXID,
 	ctx, span := tracer.Start(ctx, "GameRepository.ClearVotes")
 	defer span.End()
 
-	roomKey := fmt.Sprintf("room:%s", roomID)
-	voteKey1 := fmt.Sprintf("vote:%s", playerXID)
-	voteKey2 := fmt.Sprintf("vote:%s", playerOID)
+	roomKey := roomKeyPrefix + roomID
+	voteKey1 := voteKeyPrefix + playerXID
+	voteKey2 := voteKeyPrefix + playerOID
 	return r.rdb.HDel(ctx, roomKey, voteKey1, voteKey2).Err()
 }
-

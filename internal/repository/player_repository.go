@@ -3,10 +3,18 @@ package repository
 import (
 	"context"
 	"ctchen222/Tic-Tac-Toe/internal/player"
-	"fmt"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 	"go.opentelemetry.io/otel"
+)
+
+const (
+	PlayerKeyPrefix = "player:"
+	playerExpiry    = time.Hour * 24 * 7
+	playerInLobby   = "in_lobby"
+	PlayerInGame    = "in_game"
+	playerOffline   = "offline"
 )
 
 var tracer = otel.Tracer("repository.player")
@@ -36,7 +44,7 @@ func (r *redisPlayerRepository) FindForReconnection(ctx context.Context, id stri
 	ctx, span := tracer.Start(ctx, "PlayerRepository.FindForReconnection")
 	defer span.End()
 
-	playerKey := fmt.Sprintf("player:%s", id)
+	playerKey := PlayerKeyPrefix + id
 	data, err := r.rdb.HGetAll(ctx, playerKey).Result()
 	if err != nil {
 		return "", "", err
@@ -49,7 +57,7 @@ func (r *redisPlayerRepository) UpdateConnectionStatus(ctx context.Context, id s
 	ctx, span := tracer.Start(ctx, "PlayerRepository.UpdateConnectionStatus")
 	defer span.End()
 
-	playerKey := fmt.Sprintf("player:%s", id)
+	playerKey := PlayerKeyPrefix + id
 	return r.rdb.HSet(ctx, playerKey, "connection_status", string(status)).Err()
 }
 
@@ -58,10 +66,13 @@ func (r *redisPlayerRepository) SetInitialState(ctx context.Context, id, serverI
 	ctx, span := tracer.Start(ctx, "PlayerRepository.SetInitialState")
 	defer span.End()
 
-	playerKey := fmt.Sprintf("player:%s", id)
+	playerKey := PlayerKeyPrefix + id
 	pipe := r.rdb.Pipeline()
 	pipe.HSet(ctx, playerKey, "server_id", serverID)
-	pipe.HSet(ctx, playerKey, "status", "waiting")
+	pipe.HSet(ctx, playerKey, "status", playerInLobby)
+	pipe.HSet(ctx, playerKey, "connection_status", string(player.StatusConnected))
+	pipe.HSet(ctx, playerKey, "room_id", "")
+	pipe.Expire(ctx, playerKey, playerExpiry)
 	_, err := pipe.Exec(ctx)
 	return err
 }
@@ -71,10 +82,10 @@ func (r *redisPlayerRepository) UpdateForMatch(ctx context.Context, id, roomID s
 	ctx, span := tracer.Start(ctx, "PlayerRepository.UpdateForMatch")
 	defer span.End()
 
-	playerKey := fmt.Sprintf("player:%s", id)
+	playerKey := PlayerKeyPrefix + id
 	pipe := r.rdb.Pipeline()
 	pipe.HSet(ctx, playerKey, "room_id", roomID)
-	pipe.HSet(ctx, playerKey, "status", "in_game")
+	pipe.HSet(ctx, playerKey, "status", PlayerInGame)
 	pipe.HSet(ctx, playerKey, "connection_status", string(player.StatusConnected))
 	_, err := pipe.Exec(ctx)
 	return err
@@ -85,6 +96,6 @@ func (r *redisPlayerRepository) SetOffline(ctx context.Context, id string) error
 	ctx, span := tracer.Start(ctx, "PlayerRepository.SetOffline")
 	defer span.End()
 
-	playerKey := fmt.Sprintf("player:%s", id)
-	return r.rdb.HSet(ctx, playerKey, "status", "offline").Err()
+	playerKey := PlayerKeyPrefix + id
+	return r.rdb.HSet(ctx, playerKey, "status", playerOffline).Err()
 }

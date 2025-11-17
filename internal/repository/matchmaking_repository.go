@@ -10,14 +10,22 @@ import (
 // var tracer = otel.Tracer("repository.matchmaking")
 
 const (
-	matchmakingQueueKey = "queue:matchmaking"
+	matchmakingQueueKey     = "queue:matchmaking"
+	matchmakingGroupName    = "matchmakers"
+	matchmakingConsumerName = "matcher"
+	matchmakingStreamKey    = "matchmaking"
 )
 
 // MatchmakingRepository defines the interface for matchmaking queue operations.
 type MatchmakingRepository interface {
+	// List
 	AddToQueue(ctx context.Context, playerID string) error
 	GetPlayersFromQueue(ctx context.Context) (player1ID, player2ID string, err error)
 	RemoveFromQueue(ctx context.Context, playerID string) error
+
+	// Stream
+	StreamInit(ctx context.Context) error
+	AddToStream(ctx context.Context, playerID string) error
 }
 
 type redisMatchmakingRepository struct {
@@ -73,4 +81,35 @@ func (r *redisMatchmakingRepository) RemoveFromQueue(ctx context.Context, player
 	// LRem removes count occurrences of value from the list.
 	// If count is 0, all occurrences are removed.
 	return r.rdb.LRem(ctx, matchmakingQueueKey, 0, playerID).Err()
+}
+
+// StreamInit initializes the matchmaking stream.
+func (r *redisMatchmakingRepository) StreamInit(ctx context.Context) error {
+	err := r.rdb.XGroupCreateMkStream(ctx, matchmakingStreamKey, matchmakingGroupName, "0").Err()
+	if err != nil {
+		if err.Error() == "BUSYGROUP Consumer Group name already exists" {
+			return nil
+		}
+	}
+
+	return nil
+}
+
+// AddToStream adds a player to the matchmaking stream.
+func (r *redisMatchmakingRepository) AddToStream(ctx context.Context, playerID string) error {
+	ctx, span := tracer.Start(ctx, "MatchmakingRepository.AddToQueue")
+	defer span.End()
+
+	_, err := r.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: matchmakingStreamKey,
+		ID:     "*",
+		Values: map[string]any{
+			"player_id": playerID,
+		},
+	}).Result()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

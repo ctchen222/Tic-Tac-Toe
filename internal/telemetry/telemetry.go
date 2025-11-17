@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	"go.opentelemetry.io/otel/sdk/trace"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.25.0"
 	"google.golang.org/grpc"
@@ -56,9 +57,11 @@ func InitOtel() (func(context.Context) error, error) {
 		return nil, fmt.Errorf("failed to create OTLP trace exporter: %w", err)
 	}
 
+	sampler := trace.TraceIDRatioBased(0.1)
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(otlpTraceExporter),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sampler),
 	)
 	otel.SetTracerProvider(tp)
 

@@ -6,11 +6,14 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/internal/repository"
 	"ctchen222/Tic-Tac-Toe/internal/room"
+	"ctchen222/Tic-Tac-Toe/pkg/proto"
+	"encoding/json"
 	"log/slog"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -49,8 +52,9 @@ type Hub struct {
 	localPlayers    map[string]*player.Player
 	localRooms      map[string]*room.Room
 
-	register   chan *types.RegistrationRequest
-	unregister chan *player.Player
+	register      chan *types.RegistrationRequest
+	unregister    chan *player.Player
+	returnToLobby chan *player.Player
 }
 
 // NewHub creates a new hub.
@@ -65,6 +69,7 @@ func NewHub(gameRepo repository.GameRepository, playerRepo repository.PlayerRepo
 		localRooms:      make(map[string]*room.Room),
 		register:        make(chan *types.RegistrationRequest),
 		unregister:      make(chan *player.Player),
+		returnToLobby:   make(chan *player.Player),
 	}
 }
 
@@ -78,42 +83,33 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case req := <-h.register:
-			traceCtx, span := tracer.Start(req.Ctx, "hub.register", trace.WithAttributes(
+			hubCtx := context.Background()
+			ctx, span := tracer.Start(hubCtx, "hub.register", trace.WithAttributes(
 				attribute.String("player.id", req.Player.ID),
 				attribute.String("server.id", h.serverID),
 			))
 
-			hubCtx := context.Background()
-			slog.InfoContext(traceCtx, "Received registration request", "player.id", req.Player.ID)
+			slog.InfoContext(ctx, "Received registration request, placing player in lobby", "player.id", req.Player.ID)
 
+			// Add player to the hub's local player list
 			h.localPlayers[req.Player.ID] = req.Player
+			req.Player.State = player.StateLobby
 
-			roomID, status, err := h.playerRepo.FindForReconnection(hubCtx, req.Player.ID)
-			if err != nil && err != redis.Nil {
-				slog.ErrorContext(hubCtx, "Error finding player for reconnection", "player.id", req.Player.ID, "error", err)
+			// Start a dedicated message pump for the player in the lobby
+			if err := h.playerRepo.SetInitialState(ctx, req.Player.ID, h.serverID); err != nil {
+				slog.ErrorContext(ctx, "Failed to set initial player state in Redis", "player.id", req.Player.ID, "error", err)
 				continue
 			}
+			go h.LobbyReadPump(req.Player)
 
-			// Only handle as a reconnection if the player was in a room AND was disconnected.
-			if roomID != "" && status == player.StatusDisconnected {
-				slog.InfoContext(hubCtx, "Registering reconnected player", "player.id", req.Player.ID, "room.id", roomID)
-				h.handleReconnectionRegistration(hubCtx, req.Player, roomID)
-				span.End()
-			} else {
-				// All other cases are treated as a new registration.
-				if err := h.playerRepo.SetInitialState(hubCtx, req.Player.ID, h.serverID); err != nil {
-					slog.ErrorContext(hubCtx, "Failed to set player info in Redis", "player.id", req.Player.ID, "error", err)
-					continue
-				}
-
-				if req.Mode == "bot" {
-					h.registerBotGame(hubCtx, req)
-				} else {
-					h.queuePlayerForMatchmaking(hubCtx, req)
-				}
-				span.End()
+			msg := &proto.ServerToClientMessage{Type: "lobby_joined"}
+			data, _ := json.Marshal(msg)
+			if err := req.Player.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				slog.ErrorContext(ctx, "Failed to send lobby_joined message", "player.id", req.Player.ID, "error", err)
+				h.unregister <- req.Player
 			}
-			_ = traceCtx
+
+			span.End()
 
 		case p := <-h.unregister:
 			hubCtx := context.Background()
@@ -121,12 +117,31 @@ func (h *Hub) Run() {
 
 			delete(h.localPlayers, p.ID)
 
+			// Clean up from matchmaking queue and Redis state
 			if err := h.matchmakingRepo.RemoveFromQueue(hubCtx, p.ID); err != nil {
-				slog.WarnContext(hubCtx, "Failed to remove player from matchmaking queue", "player.id", p.ID, "error", err)
+				slog.WarnContext(hubCtx, "Failed to remove player from matchmaking queue on unregister", "player.id", p.ID, "error", err)
 			}
 
 			if err := h.playerRepo.SetOffline(hubCtx, p.ID); err != nil {
 				slog.ErrorContext(hubCtx, "Failed to set player status to offline", "player.id", p.ID, "error", err)
+			}
+
+		case p := <-h.returnToLobby:
+			hubCtx := context.Background()
+			slog.InfoContext(hubCtx, "Player returning to lobby", "player.id", p.ID)
+
+			p.State = player.StateLobby
+			if err := h.playerRepo.SetInitialState(hubCtx, p.ID, h.serverID); err != nil {
+				slog.ErrorContext(hubCtx, "Failed to set player state to lobby in Redis", "player.id", p.ID, "error", err)
+			}
+
+			go h.LobbyReadPump(p)
+
+			msg := &proto.ServerToClientMessage{Type: "lobby_joined"}
+			data, _ := json.Marshal(msg)
+			if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				slog.ErrorContext(hubCtx, "Failed to send lobby_joined message on return", "player.id", p.ID, "error", err)
+				h.unregister <- p
 			}
 		}
 	}
@@ -140,4 +155,9 @@ func (h *Hub) Register() chan<- *types.RegistrationRequest {
 // Unregister returns the unregister channel.
 func (h *Hub) Unregister() chan<- *player.Player {
 	return h.unregister
+}
+
+// ReturnToLobby returns the returnToLobby channel.
+func (h *Hub) ReturnToLobby() chan<- *player.Player {
+	return h.returnToLobby
 }

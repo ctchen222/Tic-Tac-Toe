@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -181,7 +182,7 @@ func (h *Hub) handleRematchRequested(ctx context.Context, payload *events.Rematc
 				msg := &proto.ServerToClientMessage{Type: "rematch_requested"}
 				data, _ := json.Marshal(msg)
 				if p.Conn != nil {
-					if err := p.Conn.WriteMessage(1, data); err != nil {
+					if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
 						slog.ErrorContext(ctx, "Error sending rematch_requested to player", "player.id", p.ID, "error", err)
 						span.RecordError(err)
 						span.SetStatus(codes.Error, "Error sending rematch_requested")
@@ -201,7 +202,7 @@ func (h *Hub) createAndStartRoom(ctx context.Context, roomID string, localPlayer
 	defer span.End()
 
 	moveCalculator := &bot.BotMoveCalculator{}
-	newRoom := room.NewRoom(roomID, h.rdb, h.gameRepo, h.playerRepo, moveCalculator, moveTimeout)
+	newRoom := room.NewRoom(roomID, h.rdb, h.gameRepo, h.playerRepo, moveCalculator, moveTimeout, h.returnToLobby)
 	for _, p := range localPlayers {
 		newRoom.AddPlayer(p)
 	}

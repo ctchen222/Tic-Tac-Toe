@@ -7,11 +7,9 @@ import (
 
 // RegistrationRequest is a request from a player to register with the hub.
 type RegistrationRequest struct {
-	Player     *player.Player
-	PlayerID   string
-	Mode       string
-	Difficulty string
-	Ctx        context.Context
+	Player   *player.Player
+	PlayerID string
+	Ctx      context.Context
 }
 
 // PlayerMove is a message from a player, bundled with the player object.

@@ -39,13 +39,14 @@ type Room struct {
 	mu             sync.Mutex
 	incomingMoves  chan *types.PlayerMove
 	unregister     chan *player.Player
+	returnToLobby  chan<- *player.Player
 	moveCalculator MoveCalculator
 	moveTimeout    time.Duration
 	Done           chan struct{}
 }
 
 // NewRoom creates a new game room.
-func NewRoom(id string, rdb *redis.Client, gameRepo repository.GameRepository, playerRepo repository.PlayerRepository, calculator MoveCalculator, timeout time.Duration) *Room {
+func NewRoom(id string, rdb *redis.Client, gameRepo repository.GameRepository, playerRepo repository.PlayerRepository, calculator MoveCalculator, timeout time.Duration, returnToLobby chan<- *player.Player) *Room {
 	return &Room{
 		ID:             id,
 		rdb:            rdb,
@@ -54,6 +55,7 @@ func NewRoom(id string, rdb *redis.Client, gameRepo repository.GameRepository, p
 		Players:        make([]*player.Player, 0, 2),
 		incomingMoves:  make(chan *types.PlayerMove, 10),
 		unregister:     make(chan *player.Player),
+		returnToLobby:  returnToLobby,
 		moveCalculator: calculator,
 		moveTimeout:    timeout,
 		Done:           make(chan struct{}),
@@ -91,9 +93,6 @@ func (r *Room) run() {
 		gameState, err := r.gameRepo.FindByID(ctx, r.ID)
 		if err != nil {
 			slog.ErrorContext(ctx, "run loop cannot get game state, closing room", "room.id", r.ID, "error", err)
-			if len(r.Players) > 0 {
-				r.unregister <- r.Players[0]
-			}
 			return
 		}
 
@@ -159,6 +158,9 @@ func (r *Room) run() {
 
 		case <-pingTicker.C:
 			for _, p := range r.Players {
+				if p.IsBot {
+					continue
+				}
 				if p.Status == player.StatusConnected {
 					if err := p.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 						slog.Warn("Failed to send ping to player, assuming disconnect", "player.id", p.ID, "error", err)

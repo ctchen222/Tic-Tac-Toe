@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -25,8 +26,7 @@ func (r *Room) HandleMessage(p *player.Player, rawMessage []byte) {
 	))
 	defer span.End()
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// Lock is now handled within each case to avoid holding it during I/O
 
 	if p.Status == player.StatusDisconnected {
 		slog.WarnContext(ctx, "ignoring message from disconnected player", "player.id", p.ID)
@@ -56,11 +56,16 @@ func (r *Room) HandleMessage(p *player.Player, rawMessage []byte) {
 		r.handleMove(ctx, p, &message)
 	case "rematch":
 		r.handleRematch(ctx, p, &message)
+	case "leave_room":
+		go r.closeAndReturnPlayersToLobby(ctx, p)
 	}
 }
 
 // handleMove processes a player's move.
 func (r *Room) handleMove(ctx context.Context, p *player.Player, message *proto.ClientToServerMessage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	ctx, moveSpan := tracer.Start(ctx, "room.handleMove", trace.WithAttributes(
 		attribute.String("player.id", p.ID),
 		attribute.String("room.id", r.ID),
@@ -110,6 +115,9 @@ func (r *Room) handleMove(ctx context.Context, p *player.Player, message *proto.
 
 // handleRematch processes a player's rematch request.
 func (r *Room) handleRematch(ctx context.Context, p *player.Player, message *proto.ClientToServerMessage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	ctx, span := tracer.Start(ctx, "room.handleRematch", trace.WithAttributes(
 		attribute.String("player.id", p.ID),
 		attribute.String("room.id", r.ID),
@@ -178,4 +186,39 @@ func (r *Room) handleRematch(ctx context.Context, p *player.Player, message *pro
 			span.SetStatus(codes.Error, "Failed to publish rematch_requested event")
 		}
 	}
+}
+
+func (r *Room) closeAndReturnPlayersToLobby(ctx context.Context, leavingPlayer *player.Player) {
+	slog.InfoContext(ctx, "Closing room and returning players to lobby", "room.id", r.ID, "leaving_player.id", leavingPlayer.ID)
+
+	r.mu.Lock()
+	playersInRoom := make([]*player.Player, len(r.Players))
+	copy(playersInRoom, r.Players)
+	r.mu.Unlock()
+
+	// Perform blocking operations outside the lock
+	for _, p := range playersInRoom {
+		// Notify the opponent that the other player has left
+		if p.ID != leavingPlayer.ID && !p.IsBot {
+			msg := &proto.ServerToClientMessage{Type: "opponent_left"}
+			data, _ := json.Marshal(msg)
+			if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				slog.WarnContext(ctx, "Failed to send opponent_left message", "player.id", p.ID, "error", err)
+			}
+		}
+	}
+
+	// Send all non-bot players back to the lobby
+	for _, p := range playersInRoom {
+		if !p.IsBot {
+			r.returnToLobby <- p
+		}
+	}
+
+	if err := r.gameRepo.Delete(ctx, r.ID); err != nil {
+		slog.ErrorContext(ctx, "Failed to delete game state from Redis", "room.id", r.ID, "error", err)
+	}
+
+	// Signal the room to close
+	close(r.Done)
 }

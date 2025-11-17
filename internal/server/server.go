@@ -1,6 +1,7 @@
 package server
 
 import (
+	"ctchen222/Tic-Tac-Toe/internal/api/auth"
 	"ctchen222/Tic-Tac-Toe/internal/api/controller"
 	"ctchen222/Tic-Tac-Toe/internal/hub"
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
@@ -9,7 +10,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -51,6 +51,11 @@ func (s *Server) Engine() *gin.Engine {
 
 // registerHandlers sets up the routes.
 func (s *Server) registerHandlers() {
+	// Serve static files
+	s.engine.Static("/css", "./web/css")
+	s.engine.Static("/js", "./web/js")
+	s.engine.Static("/pages", "./web/pages")
+
 	// Serve the main page
 	s.engine.GET("/", func(c *gin.Context) {
 		c.File("./web/index.html")
@@ -74,6 +79,23 @@ func (s *Server) handleWebSocket(c *gin.Context) {
 	))
 	defer span.End()
 
+	tokenString := c.Query("token")
+	if tokenString == "" {
+		slog.WarnContext(ctx, "WebSocket connection attempt without token")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authentication token"})
+		span.SetStatus(codes.Error, "Missing authentication token")
+		return
+	}
+
+	userID, err := auth.ValidateToken(tokenString)
+	if err != nil {
+		slog.WarnContext(ctx, "WebSocket connection attempt with invalid token", "error", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+		span.SetStatus(codes.Error, "Invalid or expired token")
+		return
+	}
+	span.SetAttributes(attribute.String("player.id", userID))
+
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to upgrade connection", "error", err)
@@ -82,24 +104,12 @@ func (s *Server) handleWebSocket(c *gin.Context) {
 		return
 	}
 
-	playerID := c.Query("playerId")
-	if playerID == "" {
-		playerID = uuid.New().String()
-	}
-	span.SetAttributes(attribute.String("player.id", playerID))
-
-	p := player.NewPlayer(playerID, conn)
-
-	mode := c.DefaultQuery("mode", "human")
-	difficulty := c.DefaultQuery("difficulty", "easy")
-	span.SetAttributes(attribute.String("game.mode", mode), attribute.String("game.difficulty", difficulty))
+	p := player.NewPlayer(userID, conn)
 
 	req := &types.RegistrationRequest{
-		Player:     p,
-		PlayerID:   p.ID,
-		Mode:       mode,
-		Difficulty: difficulty,
-		Ctx:        ctx,
+		Player:   p,
+		PlayerID: p.ID,
+		Ctx:      ctx,
 	}
 	s.hub.Register() <- req
 }
