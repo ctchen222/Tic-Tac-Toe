@@ -8,7 +8,6 @@ import (
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
 	"log/slog"
-	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -25,15 +24,7 @@ func (h *Hub) registerBotGame(ctx context.Context, p *player.Player, difficulty 
 
 	slog.InfoContext(ctx, "Creating bot match", "player.id", p.ID, "difficulty", difficulty)
 
-	var botGameTimeout time.Duration
-	switch difficulty {
-	case "hard":
-		botGameTimeout = 5 * time.Second
-	case "easy":
-		botGameTimeout = 15 * time.Second
-	default:
-		botGameTimeout = 10 * time.Second
-	}
+	botGameTimeout := botGameDifficultyTimeout(difficulty)
 
 	roomID := uuid.New().String()
 	moveCalculator := &bot.BotMoveCalculator{}
@@ -95,4 +86,3 @@ func (h *Hub) queuePlayerForMatchmaking(ctx context.Context, p *player.Player) {
 		slog.ErrorContext(ctx, "Failed to send queue_joined message", "player.id", p.ID, "error", err)
 	}
 }
-

@@ -2,12 +2,14 @@ package room
 
 import (
 	"context"
+	"ctchen222/Tic-Tac-Toe/internal/events"
 	"ctchen222/Tic-Tac-Toe/internal/game"
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
 	"ctchen222/Tic-Tac-Toe/internal/player"
 	"ctchen222/Tic-Tac-Toe/internal/repository"
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -15,6 +17,9 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -170,13 +175,138 @@ func (r *Room) run() {
 
 		case <-cleanupTicker.C:
 			r.mu.Lock()
+			var disconnectedPlayer *player.Player
+			var remainingPlayer *player.Player
+
 			for _, p := range r.Players {
 				if p.Status == player.StatusDisconnected && time.Since(p.LastSeen) > reconnectionGracePeriod {
-					slog.Info("Player exceeded reconnection grace period. Removing from room.", "player.id", p.ID, "room.id", r.ID)
-					r.unregister <- p
+					disconnectedPlayer = p
+				} else if p.Status == player.StatusConnected {
+					remainingPlayer = p
+				}
+			}
+
+			if disconnectedPlayer != nil {
+				slog.Info("Player exceeded reconnection grace period. Declaring forfeit.", "player.id", disconnectedPlayer.ID, "room.id", r.ID)
+
+				// Determine the winner by forfeit
+				var winnerMark game.PlayerMark
+				if remainingPlayer != nil {
+					gameState, err := r.gameRepo.FindByID(ctx, r.ID)
+					if err == nil {
+						if remainingPlayer.ID == gameState.PlayerXID {
+							winnerMark = game.PlayerX
+						} else if remainingPlayer.ID == gameState.PlayerOID {
+							winnerMark = game.PlayerO
+						}
+					}
+				}
+
+				// Update game state in Redis to reflect forfeit winner
+				if winnerMark != game.None {
+					roomKey := repository.RoomKeyPrefix + r.ID
+					r.rdb.HSet(ctx, roomKey, game.FieldWinner, string(winnerMark)).Err()
+					r.rdb.HSet(ctx, roomKey, game.FieldStatus, "finished").Err()
+
+					// Broadcast the final game result to the remaining player
+					if remainingPlayer != nil {
+						finalMsg := &proto.ServerToClientMessage{
+							Type:    "update",
+							Winner:  winnerMark,
+							Message: fmt.Sprintf("對手 %s 已斷線並棄權，你獲勝！", disconnectedPlayer.ID),
+						}
+						r.Broadcast(finalMsg)
+					}
+				} else {
+					slog.Warn("Forfeit occurred but winner could not be determined or no remaining player.", "room.id", r.ID)
+				}
+
+				// Close the room and return all players (disconnected and remaining) to lobby
+				// This will also handle cleaning up the room from localRooms in Hub
+				for _, p := range r.Players {
+					go r.closeAndReturnPlayersToLobby(ctx, p)
 				}
 			}
 			r.mu.Unlock()
 		}
+	}
+}
+
+// HandleReconnect handles a player reconnecting to this room.
+func (r *Room) HandleReconnect(reconnectingPlayer *player.Player) {
+	ctx, span := tracer.Start(context.Background(), "room.HandleReconnect", trace.WithAttributes(
+		attribute.String("player.id", reconnectingPlayer.ID),
+		attribute.String("room.id", r.ID),
+	))
+	defer span.End()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	found := false
+	for i, p := range r.Players {
+		if p.ID == reconnectingPlayer.ID {
+			// Replace the old disconnected player with the new connected one
+			r.Players[i] = reconnectingPlayer
+			reconnectingPlayer.Status = player.StatusConnected
+			reconnectingPlayer.State = player.StateInGame // Ensure state is correct
+			reconnectingPlayer.LastSeen = time.Now()
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		slog.ErrorContext(ctx, "Reconnecting player not found in room's player list", "player.id", reconnectingPlayer.ID, "room.id", r.ID)
+		span.SetStatus(codes.Error, "Reconnecting player not found in room")
+		// Fallback: send player to lobby if not found in room
+		r.returnToLobby <- reconnectingPlayer
+		return
+	}
+
+	slog.InfoContext(ctx, "Player reconnected to room", "player.id", reconnectingPlayer.ID, "room.id", r.ID)
+
+	// Update Redis status
+	if err := r.playerRepo.UpdateConnectionStatus(ctx, reconnectingPlayer.ID, player.StatusConnected); err != nil {
+		slog.ErrorContext(ctx, "Failed to update player connection status in Redis on reconnect", "player.id", reconnectingPlayer.ID, "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to update Redis status")
+	}
+
+	// Start a new ReadPump for the reconnected player
+	go r.ReadPump(reconnectingPlayer)
+
+	// Publish player_reconnected global event
+	payload, _ := json.Marshal(events.PlayerReconnectedPayload{
+		RoomID:   r.ID,
+		PlayerID: reconnectingPlayer.ID,
+	})
+	event, _ := json.Marshal(events.Event{Type: "player_reconnected", Payload: payload})
+	if err := r.rdb.Publish(ctx, events.EventsChannel, event).Err(); err != nil {
+		slog.ErrorContext(ctx, "Failed to publish player_reconnected event", "player.id", reconnectingPlayer.ID, "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to publish player_reconnected event")
+	}
+
+	// Send the latest game state to only the reconnected player
+	gameState, err := r.gameRepo.FindByID(ctx, r.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get game state for reconnected player", "player.id", reconnectingPlayer.ID, "room.id", r.ID, "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to get game state for reconnected player")
+		return
+	}
+
+	initialUpdate := &proto.ServerToClientMessage{
+		Type:   "update",
+		Board:  game.BoardArrayToSlice(gameState.Board),
+		Next:   gameState.CurrentTurn,
+		Winner: gameState.Winner,
+	}
+	data, _ := json.Marshal(initialUpdate)
+	if err := reconnectingPlayer.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		slog.ErrorContext(ctx, "Failed to send initial game state to reconnected player", "player.id", reconnectingPlayer.ID, "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to send initial game state")
 	}
 }

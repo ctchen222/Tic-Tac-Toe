@@ -14,7 +14,7 @@ const (
 	playerExpiry    = time.Hour * 24 * 7
 	playerInLobby   = "in_lobby"
 	PlayerInGame    = "in_game"
-	playerOffline   = "offline"
+	PlayerOffline   = "offline"
 )
 
 var tracer = otel.Tracer("repository.player")
@@ -26,6 +26,7 @@ type PlayerRepository interface {
 	SetInitialState(ctx context.Context, id, serverID string) error
 	UpdateForMatch(ctx context.Context, id, roomID string) error
 	SetOffline(ctx context.Context, id string) error
+	GetGameStatus(ctx context.Context, id string) (status string, roomID string, err error)
 }
 
 type redisPlayerRepository struct {
@@ -97,5 +98,22 @@ func (r *redisPlayerRepository) SetOffline(ctx context.Context, id string) error
 	defer span.End()
 
 	playerKey := PlayerKeyPrefix + id
-	return r.rdb.HSet(ctx, playerKey, "status", playerOffline).Err()
+	return r.rdb.HSet(ctx, playerKey, "status", PlayerOffline).Err()
+}
+
+// GetGameStatus retrieves the player's game status and current room.
+func (r *redisPlayerRepository) GetGameStatus(ctx context.Context, id string) (string, string, error) {
+	ctx, span := tracer.Start(ctx, "PlayerRepository.GetGameStatus")
+	defer span.End()
+
+	playerKey := PlayerKeyPrefix + id
+	data, err := r.rdb.HGetAll(ctx, playerKey).Result()
+	if err != nil {
+		return "", "", err
+	}
+	// Check if player data exists
+	if len(data) == 0 {
+		return "", "", nil // Player not found, or no game status
+	}
+	return data["status"], data["room_id"], nil
 }

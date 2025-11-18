@@ -8,7 +8,9 @@ import (
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
 	"log/slog"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -43,7 +45,7 @@ func (h *Hub) sendInitialRoomState(ctx context.Context, room *room.Room, localPl
 		assignmentMessage := &proto.PlayerAssignmentMessage{Type: "assignment", Mark: mark}
 		data, _ := json.Marshal(assignmentMessage)
 		if p.Conn != nil {
-			if err := p.Conn.WriteMessage(1, data); err != nil {
+			if err := p.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				slog.ErrorContext(ctx, "Error sending assignment to player", "player.id", p.ID, "error", err)
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "Error sending assignment to player")
@@ -58,4 +60,15 @@ func (h *Hub) sendInitialRoomState(ctx context.Context, room *room.Room, localPl
 		Winner: initialGameState.Winner,
 	}
 	room.Broadcast(initialUpdate)
+}
+
+func botGameDifficultyTimeout(difficulty string) time.Duration {
+	switch difficulty {
+	case "hard":
+		return 5 * time.Second
+	case "easy":
+		return 15 * time.Second
+	default:
+		return 10 * time.Second
+	}
 }

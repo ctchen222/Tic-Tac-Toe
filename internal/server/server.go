@@ -6,6 +6,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/hub"
 	"ctchen222/Tic-Tac-Toe/internal/hub/types"
 	"ctchen222/Tic-Tac-Toe/internal/player"
+	"ctchen222/Tic-Tac-Toe/internal/repository"
 	"log/slog"
 	"net/http"
 
@@ -24,15 +25,19 @@ type Server struct {
 	engine         *gin.Engine
 	upgrader       websocket.Upgrader
 	userController *controller.UserController
+	playerRepo     repository.PlayerRepository
+	gameRepo       repository.GameRepository
 }
 
 // NewServer creates a new Server instance.
-func NewServer(h *hub.Hub, uc *controller.UserController) *Server {
+func NewServer(h *hub.Hub, uc *controller.UserController, pr repository.PlayerRepository, gr repository.GameRepository) *Server { // Add pr parameter
 	engine := gin.Default()
 	s := &Server{
 		hub:            h,
 		engine:         engine,
 		userController: uc,
+		playerRepo:     pr,
+		gameRepo:       gr,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -104,8 +109,31 @@ func (s *Server) handleWebSocket(c *gin.Context) {
 		return
 	}
 
-	p := player.NewPlayer(userID, conn)
+	// --- New Reconnection Logic ---
+	playerStatus, roomID, err := s.playerRepo.GetGameStatus(ctx, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get player game status for reconnection check", "player.id", userID, "error", err)
+		// Fallback to normal registration if status check fails
+		playerStatus = ""
+		roomID = ""
+	}
 
+	roomExists, err := s.gameRepo.Exists(ctx, roomID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to check if game exists for reconnection", "room.id", roomID, "error", err)
+		roomExists = false
+	}
+
+	if playerStatus == repository.PlayerOffline && roomID != "" && roomExists {
+		slog.InfoContext(ctx, "Player attempting to reconnect to game", "player.id", userID, "room.id", roomID)
+		p := player.NewPlayer(userID, conn)
+		reconnectReq := &types.ReconnectRequest{Player: p, RoomID: roomID}
+		s.hub.Reconnect() <- reconnectReq
+		return // Reconnection handled, exit
+	}
+
+	// Existing logic for normal registration
+	p := player.NewPlayer(userID, conn)
 	req := &types.RegistrationRequest{
 		Player:   p,
 		PlayerID: p.ID,

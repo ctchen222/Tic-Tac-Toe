@@ -55,6 +55,7 @@ type Hub struct {
 	register      chan *types.RegistrationRequest
 	unregister    chan *player.Player
 	returnToLobby chan *player.Player
+	reconnect     chan *types.ReconnectRequest // New channel for reconnection requests
 }
 
 // NewHub creates a new hub.
@@ -70,6 +71,7 @@ func NewHub(gameRepo repository.GameRepository, playerRepo repository.PlayerRepo
 		register:        make(chan *types.RegistrationRequest),
 		unregister:      make(chan *player.Player),
 		returnToLobby:   make(chan *player.Player),
+		reconnect:       make(chan *types.ReconnectRequest), // Initialize new channel
 	}
 }
 
@@ -143,6 +145,26 @@ func (h *Hub) Run() {
 				slog.ErrorContext(hubCtx, "Failed to send lobby_joined message on return", "player.id", p.ID, "error", err)
 				h.unregister <- p
 			}
+
+		case req := <-h.reconnect:
+			hubCtx := context.Background()
+			ctx, span := tracer.Start(hubCtx, "hub.reconnect", trace.WithAttributes(
+				attribute.String("player.id", req.Player.ID),
+				attribute.String("room.id", req.RoomID),
+				attribute.String("server.id", h.serverID),
+			))
+
+			slog.InfoContext(ctx, "Received reconnection request", "player.id", req.Player.ID, "room.id", req.RoomID)
+
+			if room, ok := h.localRooms[req.RoomID]; ok {
+				room.HandleReconnect(req.Player)
+				slog.InfoContext(ctx, "Player reconnected to local room", "player.id", req.Player.ID, "room.id", req.RoomID)
+			} else {
+				slog.WarnContext(ctx, "Reconnect failed: room not found locally. Sending player to lobby.", "player.id", req.Player.ID, "room.id", req.RoomID)
+				h.returnToLobby <- req.Player
+			}
+
+			span.End()
 		}
 	}
 }
@@ -160,4 +182,9 @@ func (h *Hub) Unregister() chan<- *player.Player {
 // ReturnToLobby returns the returnToLobby channel.
 func (h *Hub) ReturnToLobby() chan<- *player.Player {
 	return h.returnToLobby
+}
+
+// Reconnect returns the reconnect channel.
+func (h *Hub) Reconnect() chan<- *types.ReconnectRequest {
+	return h.reconnect
 }

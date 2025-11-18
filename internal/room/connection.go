@@ -8,6 +8,7 @@ import (
 	"ctchen222/Tic-Tac-Toe/pkg/proto"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"go.opentelemetry.io/otel/attribute"
@@ -52,12 +53,17 @@ func (r *Room) ReadPump(p *player.Player) {
 	defer span.End()
 
 	defer func() {
-		p.Conn.Close()
 		disconnectCtx, disconnectSpan := tracer.Start(ctx, "room.ReadPump.disconnectHandler", trace.WithAttributes(
 			attribute.String("player.id", p.ID),
 			attribute.String("room.id", r.ID),
 		))
 		defer disconnectSpan.End()
+
+		// Acquire room mutex to safely update in-memory player status
+		r.mu.Lock()
+		p.Status = player.StatusDisconnected
+		p.LastSeen = time.Now()
+		r.mu.Unlock()
 
 		if err := r.playerRepo.UpdateConnectionStatus(disconnectCtx, p.ID, player.StatusDisconnected); err != nil {
 			slog.ErrorContext(disconnectCtx, "Failed to set player status to disconnected", "player.id", p.ID, "error", err)

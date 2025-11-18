@@ -5,13 +5,14 @@ import (
 	"ctchen222/Tic-Tac-Toe/internal/game"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 )
 
 const (
-	roomKeyPrefix = "room:"
+	RoomKeyPrefix = "room:"
 	voteKeyPrefix = "vote:"
 	roomExpiry    = time.Minute * 10
 )
@@ -20,6 +21,7 @@ const (
 type GameRepository interface {
 	Create(ctx context.Context, roomID, playerXID, playerOID string) error
 	FindByID(ctx context.Context, id string) (*game.GameStateDTO, error)
+	Exists(ctx context.Context, id string) (bool, error)
 	Update(ctx context.Context, id string, mark game.PlayerMark, row, col int) (*game.GameStateDTO, error)
 	Delete(ctx context.Context, id string) error
 	RecordVote(ctx context.Context, roomID, playerID string) error
@@ -48,18 +50,24 @@ func (r *redisGameRepository) Create(ctx context.Context, roomID, playerXID, pla
 	}
 
 	playerXKey := PlayerKeyPrefix + playerXID
-	playerOIDKey := PlayerKeyPrefix + playerOID
+	playerOKey := PlayerKeyPrefix + playerOID
+	playerXIsBot := strings.HasPrefix(playerXID, "bot-")
+	playerOIsBot := strings.HasPrefix(playerOID, "bot-")
 
 	pipe := r.rdb.Pipeline()
-	roomKey := roomKeyPrefix + roomID
+	roomKey := RoomKeyPrefix + roomID
 	pipe.HSet(ctx, roomKey, game.FieldBoard, boardJSON)
 	pipe.HSet(ctx, roomKey, game.FieldPlayerX, playerXID)
 	pipe.HSet(ctx, roomKey, game.FieldPlayerO, playerOID)
 	pipe.HSet(ctx, roomKey, game.FieldNextTurn, string(game.RandomlyChooseFirstPlayer()))
 	pipe.HSet(ctx, roomKey, game.FieldWinner, "")
 	pipe.HSet(ctx, roomKey, game.FieldStatus, "in_progress")
-	pipe.HSet(ctx, playerXKey, "status", PlayerInGame)
-	pipe.HSet(ctx, playerOIDKey, "status", PlayerInGame)
+	if !playerXIsBot {
+		pipe.HSet(ctx, playerXKey, "status", PlayerInGame)
+	}
+	if !playerOIsBot {
+		pipe.HSet(ctx, playerOKey, "status", PlayerInGame)
+	}
 	pipe.Expire(ctx, roomKey, roomExpiry)
 
 	_, err = pipe.Exec(ctx)
@@ -74,7 +82,7 @@ func (r *redisGameRepository) FindByID(ctx context.Context, id string) (*game.Ga
 	ctx, span := tracer.Start(ctx, "GameRepository.FindByID")
 	defer span.End()
 
-	roomKey := roomKeyPrefix + id
+	roomKey := RoomKeyPrefix + id
 	data, err := r.rdb.HGetAll(ctx, roomKey).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get game state from redis: %w", err)
@@ -100,12 +108,25 @@ func (r *redisGameRepository) FindByID(ctx context.Context, id string) (*game.Ga
 	}, nil
 }
 
+// Exists checks if a game with the given ID exists in Redis.
+func (r *redisGameRepository) Exists(ctx context.Context, id string) (bool, error) {
+	ctx, span := tracer.Start(ctx, "GameRepository.Exists")
+	defer span.End()
+
+	roomKey := RoomKeyPrefix + id
+	exists, err := r.rdb.Exists(ctx, roomKey).Result()
+	if err != nil {
+		return false, fmt.Errorf("failed to check game existence in redis: %w", err)
+	}
+	return exists == 1, nil
+}
+
 // Update applies a player's move to the game state in Redis.
 func (r *redisGameRepository) Update(ctx context.Context, id string, mark game.PlayerMark, row, col int) (*game.GameStateDTO, error) {
 	ctx, span := tracer.Start(ctx, "GameRepository.Update")
 	defer span.End()
 
-	roomKey := roomKeyPrefix + id
+	roomKey := RoomKeyPrefix + id
 
 	txf := func(tx *redis.Tx) error {
 		data, err := tx.HGetAll(ctx, roomKey).Result()
@@ -165,16 +186,13 @@ func (r *redisGameRepository) Delete(ctx context.Context, id string) error {
 	ctx, span := tracer.Start(ctx, "GameRepository.Delete")
 	defer span.End()
 
-	roomKey := roomKeyPrefix + id
+	roomKey := RoomKeyPrefix + id
 	return r.rdb.Del(ctx, roomKey).Err()
 }
 
 // RecordVote records a player's vote for a rematch.
 func (r *redisGameRepository) RecordVote(ctx context.Context, roomID, playerID string) error {
-	ctx, span := tracer.Start(ctx, "GameRepository.RecordVote")
-	defer span.End()
-
-	roomKey := roomKeyPrefix + roomID
+	roomKey := RoomKeyPrefix + roomID
 	voteKey := voteKeyPrefix + playerID
 	return r.rdb.HSet(ctx, roomKey, voteKey, "true").Err()
 }
@@ -184,7 +202,7 @@ func (r *redisGameRepository) GetVotes(ctx context.Context, roomID string) (map[
 	ctx, span := tracer.Start(ctx, "GameRepository.GetVotes")
 	defer span.End()
 
-	roomKey := roomKeyPrefix + roomID
+	roomKey := RoomKeyPrefix + roomID
 	return r.rdb.HGetAll(ctx, roomKey).Result()
 }
 
@@ -193,7 +211,7 @@ func (r *redisGameRepository) ClearVotes(ctx context.Context, roomID, playerXID,
 	ctx, span := tracer.Start(ctx, "GameRepository.ClearVotes")
 	defer span.End()
 
-	roomKey := roomKeyPrefix + roomID
+	roomKey := RoomKeyPrefix + roomID
 	voteKey1 := voteKeyPrefix + playerXID
 	voteKey2 := voteKeyPrefix + playerOID
 	return r.rdb.HDel(ctx, roomKey, voteKey1, voteKey2).Err()

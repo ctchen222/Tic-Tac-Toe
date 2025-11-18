@@ -71,7 +71,7 @@ func main() {
 	go hub.Run()
 
 	// Create the Gin-based server
-	srv := server.NewServer(hub, userController)
+	srv := server.NewServer(hub, userController, playerRepo, gameRepo)
 
 	// Graceful shutdown
 	stop := make(chan os.Signal, 1)

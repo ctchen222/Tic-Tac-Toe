@@ -17,3 +17,9 @@ type PlayerMove struct {
 	Player  *player.Player
 	Message []byte
 }
+
+// ReconnectRequest is a request from a player to reconnect to an existing game.
+type ReconnectRequest struct {
+	Player *player.Player
+	RoomID string
+}
