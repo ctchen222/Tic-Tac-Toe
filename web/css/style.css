@@ -1,0 +1,270 @@
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+
+body {
+	font-family: 'Share Tech Mono', monospace;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	min-height: 100vh;
+	margin: 0;
+	background-color: #1a1a2e;
+	color: #e0e0e0;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.container {
+	background-color: #0f0f1a;
+	padding: 40px;
+	border-radius: 10px;
+	box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
+	text-align: center;
+	width: 100%;
+	max-width: 700px;
+	box-sizing: border-box;
+	border: 1px solid #00ffff;
+	display: flex; /* Make container a flex container */
+	flex-direction: column; /* Stack children vertically */
+	align-items: center; /* Center children horizontally */
+}
+
+h1 {
+	color: #00ffff;
+	margin-bottom: 25px;
+	text-shadow: 0 0 10px #00ffff;
+}
+
+p {
+	font-size: 1.1em;
+	line-height: 1.6;
+	margin-bottom: 15px;
+	color: #b0b0b0;
+}
+
+.status-message {
+	margin-top: 20px;
+	padding: 10px;
+	border-radius: 5px;
+	font-weight: bold;
+	background-color: #3a3a5a;
+	color: #00ffff;
+	border: 1px solid #00ffff;
+	box-shadow: 0 0 8px rgba(0, 255, 255, 0.3);
+}
+
+.error-message {
+	background-color: #5a2a2a;
+	color: #ff6666;
+	border: 1px solid #ff0000;
+	box-shadow: 0 0 8px rgba(255, 0, 0, 0.3);
+}
+
+.button-group button,
+select {
+	padding: 12px 25px;
+	margin: 10px 8px;
+	background-color: #00ffff;
+	color: #1a1a2e;
+	border: none;
+	border-radius: 5px;
+	cursor: pointer;
+	font-size: 1.1em;
+	font-family: 'Share Tech Mono', monospace;
+	transition: background-color 0.3s ease, box-shadow 0.3s ease;
+	box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+.button-group button:hover {
+	background-color: #00e6e6;
+	box-shadow: 0 0 15px rgba(0, 255, 255, 0.8);
+}
+
+select {
+	background-color: #ff00ff;
+	color: #1a1a2e;
+	box-shadow: 0 0 10px rgba(255, 0, 255, 0.5);
+}
+
+select:hover {
+	background-color: #e600e6;
+	box-shadow: 0 0 15px rgba(255, 0, 255, 0.8);
+}
+
+#gameArea {
+	margin-top: 30px;
+	border-top: 1px solid #00ffff;
+	padding-top: 30px;
+}
+
+#gameBoard {
+	display: grid;
+	grid-template-columns: repeat(3, 120px);
+	grid-template-rows: repeat(3, 120px);
+	gap: 8px;
+	width: 384px;
+	height: 384px;
+	margin: 30px auto;
+	border: 2px solid #00ffff;
+	background-color: #0f0f1a;
+	box-shadow: 0 0 25px rgba(0, 255, 255, 0.7);
+}
+
+.cell {
+	width: 120px;
+	height: 120px;
+	background-color: #1a1a2e;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	font-size: 6em;
+	font-weight: bold;
+	cursor: pointer;
+	border: 1px solid #00ffff;
+	transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.cell:hover {
+	background-color: #2a2a4a;
+	box-shadow: 0 0 15px rgba(0, 255, 255, 0.5);
+}
+
+.cell.x {
+	color: #ff00ff;
+	text-shadow: 0 0 10px #ff00ff;
+}
+
+.cell.o {
+	color: #00ffff;
+	text-shadow: 0 0 10px #00ffff;
+}
+
+#currentTurnDisplay {
+	font-size: 1.4em;
+	font-weight: bold;
+	margin-bottom: 15px;
+	color: #00ffff;
+	text-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
+}
+
+#rematchButtons button {
+	background-color: #ff00ff;
+	color: #1a1a2e;
+	box-shadow: 0 0 10px rgba(255, 0, 255, 0.5);
+}
+
+#rematchButtons button:hover {
+	background-color: #e600e6;
+	box-shadow: 0 0 15px rgba(255, 0, 255, 0.8);
+}
+
+/* --- New Styles for Header and Auth --- */
+
+.main-header {
+	width: 100%;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 20px;
+	border-bottom: 1px solid #00ffff;
+	padding-bottom: 20px;
+}
+
+.main-header h1 {
+	margin: 0;
+	font-size: 1.8em;
+}
+
+.main-header nav {
+	display: flex;
+	align-items: center;
+	gap: 15px;
+}
+
+.header-link {
+	color: #ff00ff;
+	text-decoration: none;
+	font-size: 1.1em;
+	transition: text-shadow 0.3s ease;
+}
+
+.header-link:hover {
+	text-shadow: 0 0 10px #ff00ff;
+}
+
+#usernameDisplay {
+	color: #00ffff;
+}
+
+/* Ensure page content is also centered */
+#page-content {
+	width: 100%;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	flex-grow: 1; /* Allow it to take available space */
+}
+
+#page-content h2 {
+	color: #ff00ff;
+	margin-bottom: 20px;
+	text-shadow: 0 0 8px #ff00ff;
+}
+
+.auth-form {
+	width: 100%;
+	max-width: 400px;
+	margin-top: 30px;
+}
+
+.form-group {
+	margin-bottom: 20px;
+	text-align: left;
+}
+
+.form-group label {
+	display: block;
+	margin-bottom: 8px;
+	color: #00ffff;
+}
+
+.form-group input {
+	width: 100%;
+	padding: 10px;
+	background-color: #1a1a2e;
+	border: 1px solid #00ffff;
+	border-radius: 5px;
+	color: #e0e0e0;
+	font-family: 'Share Tech Mono', monospace;
+	font-size: 1em;
+	box-sizing: border-box;
+}
+
+.submit-btn {
+	width: 100%;
+	padding: 12px 25px;
+	background-color: #ff00ff;
+	color: #1a1a2e;
+	border: none;
+	border-radius: 5px;
+	cursor: pointer;
+	font-size: 1.1em;
+	font-family: 'Share Tech Mono', monospace;
+	transition: background-color 0.3s ease, box-shadow 0.3s ease;
+	box-shadow: 0 0 10px rgba(255, 0, 255, 0.5);
+}
+
+.submit-btn:hover {
+	background-color: #e600e6;
+	box-shadow: 0 0 15px rgba(255, 0, 255, 0.8);
+}
+
+.switch-auth {
+	margin-top: 20px;
+}
+
+.switch-auth a {
+	color: #00ffff;
+	text-decoration: none;
+	font-weight: bold;
+}
