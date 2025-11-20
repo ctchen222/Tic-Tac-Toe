@@ -95,18 +95,28 @@ func (r *Room) handleMove(ctx context.Context, p *player.Player, message *proto.
 		return
 	}
 
-	_, err = r.gameRepo.Update(ctx, r.ID, playerMark, message.Position[0], message.Position[1])
+	updatedGameState, err := r.gameRepo.Update(ctx, r.ID, playerMark, message.Position[0], message.Position[1])
 	if err != nil {
 		slog.WarnContext(ctx, "invalid move from player", "player.id", p.ID, "error", err)
 		moveSpan.SetAttributes(attribute.Bool("move.valid", false))
 		moveSpan.RecordError(err)
 		moveSpan.SetStatus(codes.Error, "Invalid move")
+		// Consider sending an error message back to the player
 		return
 	}
 	moveSpan.SetAttributes(attribute.Bool("move.valid", true))
 
+	// Publish the entire updated game state
+	payload, err := json.Marshal(updatedGameState)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to marshal updated game state", "room.id", r.ID, "error", err)
+		moveSpan.RecordError(err)
+		moveSpan.SetStatus(codes.Error, "Failed to marshal updated game state")
+		return
+	}
+
 	roomChannel := fmt.Sprintf("channel:room:%s", r.ID)
-	if err := r.rdb.Publish(ctx, roomChannel, "update").Err(); err != nil {
+	if err := r.rdb.Publish(ctx, roomChannel, payload).Err(); err != nil {
 		slog.ErrorContext(ctx, "failed to publish update for room", "room.id", r.ID, "error", err)
 		moveSpan.RecordError(err)
 		moveSpan.SetStatus(codes.Error, "Failed to publish room update")

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"ctchen222/Tic-Tac-Toe/internal/game"
+	"ctchen222/Tic-Tac-Toe/internal/player"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -24,6 +25,7 @@ type GameRepository interface {
 	Exists(ctx context.Context, id string) (bool, error)
 	Update(ctx context.Context, id string, mark game.PlayerMark, row, col int) (*game.GameStateDTO, error)
 	Delete(ctx context.Context, id string) error
+	RemovePlayersFromGame(ctx context.Context, players []*player.Player) error
 	RecordVote(ctx context.Context, roomID, playerID string) error
 	GetVotes(ctx context.Context, roomID string) (map[string]string, error)
 	ClearVotes(ctx context.Context, roomID, playerXID, playerOID string) error
@@ -188,6 +190,23 @@ func (r *redisGameRepository) Delete(ctx context.Context, id string) error {
 
 	roomKey := RoomKeyPrefix + id
 	return r.rdb.Del(ctx, roomKey).Err()
+}
+
+// RemovePlayersFromGame updates player statuses to offline after game ends.
+func (r *redisGameRepository) RemovePlayersFromGame(ctx context.Context, players []*player.Player) error {
+	ctx, span := tracer.Start(ctx, "GameRepository.RemovePlayersFromGame")
+	defer span.End()
+
+	pipe := r.rdb.Pipeline()
+	for _, p := range players {
+		if strings.HasPrefix(p.ID, "bot-") {
+			continue
+		}
+		playerKey := PlayerKeyPrefix + p.ID
+		pipe.HSet(ctx, playerKey, "status", playerInLobby)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 // RecordVote records a player's vote for a rematch.

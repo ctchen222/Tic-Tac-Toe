@@ -61,6 +61,7 @@ func (h *Hub) runMatcher(ctx context.Context) {
 		//TODO: refactor span error handling
 		matchCtx, matchSpan := tracer.Start(ctx, "hub.runMatcher.matchAttempt")
 
+		// TODO: stream
 		player1ID, player2ID, err := h.matchmakingRepo.GetPlayersFromQueue(matchCtx)
 		if err != nil {
 			slog.ErrorContext(matchCtx, "Error getting players from queue", "error", err)

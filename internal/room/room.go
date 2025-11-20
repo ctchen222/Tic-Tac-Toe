@@ -23,10 +23,10 @@ import (
 )
 
 const (
-	heartbeatInterval = 10 * time.Second
+	heartbeatInterval = 30 * time.Second
 )
 
-var reconnectionGracePeriod = 60 * time.Second
+var reconnectionGracePeriod = 1 * time.Minute
 var tracer = otel.Tracer("room")
 
 // MoveCalculator defines an interface for an agent that can calculate a game move.
@@ -97,6 +97,9 @@ func (r *Room) run() {
 	for {
 		gameState, err := r.gameRepo.FindByID(ctx, r.ID)
 		if err != nil {
+			if err := r.gameRepo.RemovePlayersFromGame(ctx, r.Players); err != nil {
+				slog.ErrorContext(ctx, "Failed to remove players from game on room closure", "room.id", r.ID, "error", err)
+			}
 			slog.ErrorContext(ctx, "run loop cannot get game state, closing room", "room.id", r.ID, "error", err)
 			return
 		}
@@ -152,7 +155,7 @@ func (r *Room) run() {
 			}
 
 			slog.Info("Player timed out", "player.id", currentPlayer.ID, "room.id", r.ID)
-			row, col := r.moveCalculator.CalculateNextMove(game.BoardArrayToSlice(gameState.Board), gameState.CurrentTurn, "medium")
+			row, col := r.moveCalculator.CalculateNextMove(game.BoardArrayToSlice(gameState.Board), gameState.CurrentTurn, "easy")
 
 			if row != -1 && col != -1 {
 				slog.Info("Proxy move for player", "player.id", currentPlayer.ID, "row", row, "col", col)
@@ -169,12 +172,16 @@ func (r *Room) run() {
 				if p.Status == player.StatusConnected {
 					if err := p.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 						slog.Warn("Failed to send ping to player, assuming disconnect", "player.id", p.ID, "error", err)
+						p.Status = player.StatusDisconnected
+						p.LastSeen = time.Now()
 					}
 				}
 			}
 
 		case <-cleanupTicker.C:
 			r.mu.Lock()
+			defer r.mu.Unlock()
+
 			var disconnectedPlayer *player.Player
 			var remainingPlayer *player.Player
 
@@ -227,7 +234,7 @@ func (r *Room) run() {
 					go r.closeAndReturnPlayersToLobby(ctx, p)
 				}
 			}
-			r.mu.Unlock()
+			// close(r.Done)
 		}
 	}
 }
