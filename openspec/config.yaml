@@ -1,0 +1,32 @@
+schema: spec-driven
+
+context: |
+  Project: Real-time browser Tic-Tac-Toe.
+  Backend: Go 1.24, Gin HTTP, Gorilla WebSocket.
+  Frontend: Vanilla JavaScript, HTML, and CSS served by Gin.
+  State: Redis for players, rooms, matchmaking, and Pub/Sub; SQLite for accounts.
+  Observability: OpenTelemetry SDK and Collector, Jaeger, Prometheus, Loki, Grafana.
+  Runtime entrypoint: cmd/server/main.go.
+  Architecture references: docs/tic-tac-toe-overview.html,
+    docs/tic-tac-toe-module-map.html, and docs/tic-tac-toe-game-runtime.html.
+  Evidence rule: accepted specs describe behavior confirmed by source code, tests,
+    or runtime configuration. Planned behavior belongs in a change proposal until
+    implemented, verified, and archived into the main specs.
+  Known baseline caveat: the full Go test suite currently fails to compile in
+    internal/match because legacy tests reference room.Player.
+
+rules:
+  proposal:
+    - Name every capability affected by the change.
+    - Include explicit non-goals and identify current behavior being changed.
+    - Do not present planned behavior as already implemented.
+  specs:
+    - Use SHALL or MUST for every normative requirement.
+    - Give every requirement at least one WHEN/THEN scenario.
+    - Describe observable contracts and consistency guarantees, not incidental function names.
+  design:
+    - Explain ownership across Browser, Gin, Hub, Room, Redis, SQLite, and observability services when relevant.
+    - Call out single-instance assumptions and cross-instance behavior explicitly.
+  tasks:
+    - Keep tasks small, ordered, and independently verifiable.
+    - Include focused tests plus openspec validate --all --strict.
